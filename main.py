@@ -6,12 +6,12 @@ from telegram.ext import ApplicationBuilder,CommandHandler,MessageHandler,Callba
 BOT_TOKEN=os.getenv("BOT_TOKEN","").strip()
 PORT=int(os.getenv("PORT","10000"))
 app=Flask(__name__)
-
 CRYPTO={"BTC":"BTCUSDT","ETH":"ETHUSDT","BNB":"BNBUSDT","SOL":"SOLUSDT","XRP":"XRPUSDT","DOGE":"DOGEUSDT","ADA":"ADAUSDT","AVAX":"AVAXUSDT","LINK":"LINKUSDT","TRX":"TRXUSDT","DOT":"DOTUSDT","MATIC":"MATICUSDT","LTC":"LTCUSDT","BCH":"BCHUSDT","UNI":"UNIUSDT","ATOM":"ATOMUSDT","ETC":"ETCUSDT","FIL":"FILUSDT","PEPE":"PEPEUSDT","BONK":"BONKUSDT","SHIB":"SHIBUSDT","FLOKI":"FLOKIUSDT","FARTCOIN":"FARTCOINUSDT","WIF":"WIFUSDT","BABY":"BABYUSDT","BOME":"BOMEUSDT","PAXG":"PAXGUSDT"}
 SESSION=requests.Session()
+SESSION.headers.update({"Cache-Control":"no-cache"})
 
 @app.get("/")
-def home(): return "PHILEDIZ OK",200
+def home(): return "PHILEDIZ 1H OK",200
 
 def clean(t):
     t=t.upper().strip().replace("/","").replace("-","").replace("_","")
@@ -21,13 +21,12 @@ def clean(t):
     if t.endswith("USDT") and t[:-4] in CRYPTO: return t[:-4]
     return t
 
-def fmt(v):
-    return f"{v:,.2f}" if v>=1000 else f"{v:,.4f}" if v>=1 else f"{v:,.6f}"
+def fmt(v): return f"{v:,.2f}" if v>=1000 else f"{v:,.4f}" if v>=1 else f"{v:,.6f}"
 
-def bybit_kline(sym):
+def bybit_kline_1h(sym):
     try:
         for cat in ["linear","spot"]:
-            r=SESSION.get("https://api.bybit.com/v5/market/kline",params={"category":cat,"symbol":sym,"interval":"15","limit":200},timeout=10).json()
+            r=SESSION.get("https://api.bybit.com/v5/market/kline",params={"category":cat,"symbol":sym,"interval":"60","limit":200},timeout=10).json()
             if r.get("retCode")!=0: continue
             rows=r.get("result",{}).get("list",[])
             if len(rows)<30: continue
@@ -40,10 +39,10 @@ def bybit_kline(sym):
     except: pass
     return []
 
-def bybit_ticker(sym):
+def live_price(sym):
     try:
         for cat in ["linear","spot"]:
-            r=SESSION.get("https://api.bybit.com/v5/market/tickers",params={"category":cat,"symbol":sym},timeout=8).json()
+            r=SESSION.get("https://api.bybit.com/v5/market/tickers",params={"category":cat,"symbol":sym},timeout=5).json()
             lst=r.get("result",{}).get("list",[])
             if not lst: continue
             return float(lst[0]["lastPrice"])
@@ -75,10 +74,10 @@ def atr(c):
 def analyze(code):
     sym=CRYPTO.get(code)
     if not sym: return None
-    kl=bybit_kline(sym)
-    if len(kl)<40: return None
+    kl=bybit_kline_1h(sym)
+    if len(kl)<50: return None
     closes=[x["c"] for x in kl]
-    price=bybit_ticker(sym) or closes[-1]
+    price=live_price(sym) or closes[-1]
     e20=ema(closes,20); e50=ema(closes,50); r=rsi(closes); a=atr(kl)
     if not e20 or not e50: return None
     score=(1 if price>e20 else -1)+(1 if e20>e50 else -1)+(1 if r>55 else -1 if r<45 else 0)
@@ -89,22 +88,22 @@ def analyze(code):
     else: sl=tp1=tp2=tp3=None
     return {"code":code,"sym":sym,"price":price,"e20":e20,"e50":e50,"rsi":r,"atr":a,"dir":direction,"sl":sl,"tp1":tp1,"tp2":tp2,"tp3":tp3,"lev":lev,"score":score}
 
-def get_gold():
+def get_gold_1h():
     real=None
     try:
-        r=SESSION.get("https://api.gold-api.com/price/XAU",timeout=8)
+        r=SESSION.get("https://api.gold-api.com/price/XAU",timeout=5)
         if r.status_code==200: real=float(r.json().get("price",0))
     except: pass
-    kl=bybit_kline("PAXGUSDT")
-    if len(kl)<40: return None
-    closes=[x["c"] for x in kl]; paxg=closes[-1]
+    kl=bybit_kline_1h("PAXGUSDT")
+    if len(kl)<50: return None
+    closes=[x["c"] for x in kl]; paxg=live_price("PAXGUSDT") or closes[-1]
     price=real if real and abs(real-paxg)<300 else paxg
     e20=ema(closes,20); e50=ema(closes,50); r=rsi(closes); a=atr(kl)
     score=(1 if price>e20 else -1)+(1 if e20>e50 else -1)
     direction="BUY" if score>=1 else "SELL"
     if direction=="BUY": sl=price-1.2*a; tp1=price+1*a; tp2=price+2*a; tp3=price+3.5*a
     else: sl=price+1.2*a; tp1=price-1*a; tp2=price-2*a; tp3=price-3.5*a
-    src=f"REAL XAUUSD ${price:.2f} Live" if real else f"PAXG ${price:.2f}"
+    src=f"REAL XAUUSD ${price:.2f} Live 1H" if real else f"PAXG ${price:.2f} 1H"
     return {"price":price,"e20":e20,"e50":e50,"rsi":r,"dir":direction,"sl":sl,"tp1":tp1,"tp2":tp2,"tp3":tp3,"src":src,"score":score}
 
 def coins_kb():
@@ -113,23 +112,22 @@ def coins_kb():
         row.append(InlineKeyboardButton(c,callback_data=f"C_{c}"))
         if len(row)==3: btns.append(row); row=[]
     if row: btns.append(row)
-    btns.append([InlineKeyboardButton("🥇 XAUUSD REAL",callback_data="C_XAUUSD")])
+    btns.append([InlineKeyboardButton("🥇 XAUUSD 1H REAL",callback_data="C_XAUUSD")])
     return InlineKeyboardMarkup(btns)
 
-def mt5_kb():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🥇 XAUUSD REAL",callback_data="C_XAUUSD")],[InlineKeyboardButton("📋 CRYPTO",callback_data="M_COINS")]])
+def mt5_kb(): return InlineKeyboardMarkup([[InlineKeyboardButton("🥇 XAUUSD 1H REAL",callback_data="C_XAUUSD")],[InlineKeyboardButton("📋 CRYPTO 1H",callback_data="M_COINS")]])
 
-async def start(u,c): await u.message.reply_text("🤖 PHILEDIZ FIXED\n\n/coins → BTC ETH SOL BONK PEPE etc\n/mt5 → REAL XAUUSD $4154 + TP/SL",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 CRYPTO",callback_data="M_COINS"),InlineKeyboardButton("🥇 MT5",callback_data="M_MT5")]]))
-async def coins_cmd(u,c): await u.message.reply_text("📋 SELECT COIN:",reply_markup=coins_kb())
-async def mt5_cmd(u,c): await u.message.reply_text("🥇 MT5 GOLD REAL:",reply_markup=mt5_kb())
+async def start(u,c): await u.message.reply_text("🤖 PHILEDIZ 1H TIMEFRAME\n\n✅ Price dey update live now\n✅ 1H timeframe\n\n/coins → 1H crypto\n/mt5 → XAUUSD 1H REAL $4154",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 1H CRYPTO",callback_data="M_COINS"),InlineKeyboardButton("🥇 1H GOLD",callback_data="M_MT5")]]))
+async def coins_cmd(u,c): await u.message.reply_text("📋 SELECT COIN (1H):",reply_markup=coins_kb())
+async def mt5_cmd(u,c): await u.message.reply_text("🥇 MT5 GOLD 1H REAL:",reply_markup=mt5_kb())
 async def analyze_cmd(u,c):
     if not c.args: await u.message.reply_text("Ex: /analyze BTC",reply_markup=coins_kb()); return
     await run(u,clean(c.args[0]))
 async def btn(u,c):
     q=u.callback_query; await q.answer(); d=q.data
-    if d=="M_COINS": await q.edit_message_text("📋 SELECT COIN:",reply_markup=coins_kb()); return
-    if d=="M_MT5": await q.edit_message_text("🥇 MT5 MENU:",reply_markup=mt5_kb()); return
-    if d.startswith("C_"): await q.edit_message_text(f"🔎 {d[2:]}..."); await run(q,d[2:])
+    if d=="M_COINS": await q.edit_message_text("📋 SELECT COIN (1H):",reply_markup=coins_kb()); return
+    if d=="M_MT5": await q.edit_message_text("🥇 MT5 1H MENU:",reply_markup=mt5_kb()); return
+    if d.startswith("C_"): await q.edit_message_text(f"🔎 {d[2:]} 1H live..."); await run(q,d[2:])
 async def txt(u,c):
     t=(u.message.text or "").strip()
     if len(t.split())==1:
@@ -139,18 +137,18 @@ async def txt(u,c):
 async def run(upd,sym):
     from telegram import CallbackQuery
     send=upd.message.reply_text if isinstance(upd,CallbackQuery) else upd.message.reply_text
-    if not isinstance(upd,CallbackQuery): await upd.message.reply_text(f"🔎 Analyzing {sym}...")
+    if not isinstance(upd,CallbackQuery): await upd.message.reply_text(f"🔎 Analyzing {sym} 1H live price...")
     if sym=="XAUUSD" or sym=="PAXG":
-        r=get_gold()
+        r=get_gold_1h()
         if not r: await send("❌ XAUUSD unavailable"); return
-        await send(f"🤖 XAUUSD REAL LIVE\n\n💰 Price: {fmt(r['price'])}\n📡 {r['src']}\n\n📌 {r['dir']} Score {r['score']}\n\n💵 Entry: {fmt(r['price'])} Lev 10x\n🛑 SL: {fmt(r['sl'])}\n🎯 TP1: {fmt(r['tp1'])}\n🎯 TP2: {fmt(r['tp2'])}\n🎯 TP3: {fmt(r['tp3'])}",reply_markup=mt5_kb())
+        await send(f"🤖 XAUUSD 1H REAL LIVE\n\n💰 Price: {fmt(r['price'])} (live)\n📡 {r['src']}\n⏱ Timeframe: 1H\n\n📌 {r['dir']} Score {r['score']}\n\n💵 Entry: {fmt(r['price'])} Lev 10x\n🛑 SL: {fmt(r['sl'])}\n🎯 TP1: {fmt(r['tp1'])}\n🎯 TP2: {fmt(r['tp2'])}\n🎯 TP3: {fmt(r['tp3'])}",reply_markup=mt5_kb())
         return
     r=analyze(sym)
     if not r: await send("❌ Data unavailable",reply_markup=coins_kb()); return
     if r["dir"]!="WAIT":
-        await send(f"🤖 {r['sym']}\n💰 {fmt(r['price'])}\n📊 EMA20 {fmt(r['e20'])} EMA50 {fmt(r['e50'])} RSI {r['rsi']:.1f}\n\n📌 {r['dir']} Score {r['score']}\n\n💵 Entry: {fmt(r['price'])} Lev {r['lev']}x\n🛑 SL: {fmt(r['sl'])}\n🎯 TP1: {fmt(r['tp1'])}\n🎯 TP2: {fmt(r['tp2'])}\n🎯 TP3: {fmt(r['tp3'])}",reply_markup=coins_kb())
+        await send(f"🤖 {r['sym']} 1H LIVE\n💰 {fmt(r['price'])} (live update)\n📊 EMA20 {fmt(r['e20'])} EMA50 {fmt(r['e50'])} RSI {r['rsi']:.1f}\n⏱ 1H timeframe\n\n📌 {r['dir']} Score {r['score']}\n\n💵 Entry: {fmt(r['price'])} Lev {r['lev']}x\n🛑 SL: {fmt(r['sl'])}\n🎯 TP1: {fmt(r['tp1'])}\n🎯 TP2: {fmt(r['tp2'])}\n🎯 TP3: {fmt(r['tp3'])}",reply_markup=coins_kb())
     else:
-        await send(f"🤖 {r['sym']} WAIT Score {r['score']} Price {fmt(r['price'])}",reply_markup=coins_kb())
+        await send(f"🤖 {r['sym']} 1H WAIT Score {r['score']} Price {fmt(r['price'])} live",reply_markup=coins_kb())
 
 def run_flask(): app.run(host="0.0.0.0",port=PORT)
 def run_bot():
