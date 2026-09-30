@@ -1,138 +1,119 @@
-import os
-import re
-import threading
-import time
-from typing import Optional, List
+import os, re, threading, time
 import requests
 from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-
-# ============================================================
-# PHILEDIZ V2 - FIXED FOR RENDER GREEN DEPLOY
-# SAME SETUP AS CHATGPT, ONLY BAD PARTS FIXED
-# ============================================================
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 PORT = int(os.getenv("PORT", "10000"))
 
-# FIX 1: Don't crash build if BOT_TOKEN missing
-if not BOT_TOKEN:
-    print("⚠️ BOT_TOKEN not set yet - Flask will run, bot will start after ENV set", flush=True)
-
 app = Flask(__name__)
 
-# KEEP YOUR 10 + ADD YOUR 50 (so menu still work)
 CRYPTO = {
-    "BTC": "BTCUSDT","ETH": "ETHUSDT","BNB": "BNBUSDT","SOL": "SOLUSDT",
-    "XRP": "XRPUSDT","DOGE": "DOGEUSDT","ADA": "ADAUSDT","AVAX": "AVAXUSDT",
-    "LINK": "LINKUSDT","TRX": "TRXUSDT",
-    "DOT": "DOTUSDT","MATIC": "MATICUSDT","LTC": "LTCUSDT","BCH": "BCHUSDT",
-    "UNI": "UNIUSDT","ATOM": "ATOMUSDT","ETC": "ETCUSDT","FIL": "FILUSDT",
-    "PEPE": "PEPEUSDT","BONK": "BONKUSDT","SHIB": "SHIBUSDT","FLOKI": "FLOKIUSDT",
-    "FARTCOIN": "FARTCOINUSDT","WIF": "WIFUSDT","BABY": "BABYUSDT",
+    "BTC":"BTCUSDT","ETH":"ETHUSDT","BNB":"BNBUSDT","SOL":"SOLUSDT",
+    "XRP":"XRPUSDT","DOGE":"DOGEUSDT","ADA":"ADAUSDT","AVAX":"AVAXUSDT",
+    "LINK":"LINKUSDT","TRX":"TRXUSDT","DOT":"DOTUSDT","MATIC":"MATICUSDT",
+    "LTC":"LTCUSDT","BCH":"BCHUSDT","UNI":"UNIUSDT","ATOM":"ATOMUSDT",
+    "ETC":"ETCUSDT","FIL":"FILUSDT","PEPE":"PEPEUSDT","BONK":"BONKUSDT",
+    "SHIB":"SHIBUSDT","FLOKI":"FLOKIUSDT","FARTCOIN":"FARTCOINUSDT",
+    "WIF":"WIFUSDT","BABY":"BABYUSDT","BOME":"BOMEUSDT"
 }
 
-# FIX 2: Only real Bybit host
-BYBIT_BASES = ["https://api.bybit.com"]
+BYBIT_BASES=["https://api.bybit.com"]
+SESSION=requests.Session()
+SESSION.headers.update({"User-Agent":"Mozilla/5.0 PHILEDIZ-V2-FINAL-FIXED","Accept":"application/json"})
 
-SESSION = requests.Session()
-SESSION.headers.update({"User-Agent": "Mozilla/5.0 PHILEDIZ-V2-FIXED","Accept":"application/json"})
-
-# REAL MAX LEVERAGE MAP - Used if Bybit slow
-REAL_LEV_FALLBACK = {
-    "BTCUSDT": 200, "ETHUSDT": 200, "SOLUSDT": 125, "BNBUSDT": 75, "XRPUSDT": 75,
-    "DOGEUSDT": 75, "ADAUSDT": 75, "AVAXUSDT": 75, "LINKUSDT": 75, "TRXUSDT": 75,
-    "FARTCOINUSDT": 12.5, "BABYUSDT": 10, "PEPEUSDT": 25, "BONKUSDT": 25, "WIFUSDT": 25,
-}
-LEV_CACHE = {}
+# SMALL ACCOUNT LEVERAGE SETTINGS - FIXED FOR SMALL AMOUNT
+SMALL_ACCOUNT_MODE = True
+REAL_LEV_FALLBACK={"BTCUSDT":15,"ETHUSDT":15,"SOLUSDT":10,"BNBUSDT":10,"XRPUSDT":10,"DOGEUSDT":10,"ADAUSDT":10,"AVAXUSDT":10,"LINKUSDT":10,"TRXUSDT":10,"DOTUSDT":10,"MATICUSDT":10,"LTCUSDT":10,"BCHUSDT":10,"UNIUSDT":10,"ATOMUSDT":10,"ETCUSDT":10,"FILUSDT":10,"PEPEUSDT":5,"BONKUSDT":5,"SHIBUSDT":5,"FLOKIUSDT":5,"FARTCOINUSDT":5,"WIFUSDT":5,"BABYUSDT":5,"BOMEUSDT":5}
+LEV_CACHE={}
 
 @app.get("/")
-def home(): return "PHILEDIZ V2 is online", 200
+def home(): return "PHILEDIZ V2 FINAL FIXED - SMC CHART + SMALL LEVERAGE", 200
 @app.get("/health")
-def health(): return {"status": "ok","bot": "PHILEDIZ V2","market_data": "Bybit public API"}, 200
+def health(): return {"status":"ok","bot":"PHILEDIZ V2 FINAL","xauusd":"enabled","chart":"SMC White","leverage":"small 5/10/15x"}, 200
 
-def clean_symbol(text: str) -> str:
-    text = text.upper().strip().replace("/","").replace("-","").replace("_","")
-    text = re.sub(r"[^A-Z0-9]", "", text)
-    aliases = {"BITCOIN":"BTC","ETHEREUM":"ETH","BINANCECOIN":"BNB","SOLANA":"SOL","RIPPLE":"XRP","DOGECOIN":"DOGE","CARDANO":"ADA","AVALANCHE":"AVAX","CHAINLINK":"LINK","TRON":"TRX"}
-    if text in aliases: text = aliases[text]
-    if text.endswith("USDT") and text[:-4] in CRYPTO: return text[:-4]
-    return text
+def clean_symbol(t:str)->str:
+    t=t.upper().strip().replace("/","").replace("-","").replace("_",""); t=re.sub(r"[^A-Z0-9]","",t)
+    aliases={"BITCOIN":"BTC","ETHEREUM":"ETH","SOLANA":"SOL","RIPPLE":"XRP","GOLD":"XAUUSD","XAU":"XAUUSD"}
+    if t in aliases: t=aliases[t]
+    if t.endswith("USDT") and t[:-4] in CRYPTO: return t[:-4]
+    return t
 
-def fmt_price(value: float) -> str:
-    if value >= 1000: return f"{value:,.2f}"
-    if value >= 100: return f"{value:,.3f}"
-    if value >= 1: return f"{value:,.4f}"
-    if value >= 0.01: return f"{value:,.5f}"
-    return f"{value:,.8f}"
+def fmt_price(v:float)->str:
+    if v>=1000: return f"{v:,.2f}"
+    if v>=100: return f"{v:,.3f}"
+    if v>=1: return f"{v:,.4f}"
+    if v>=0.01: return f"{v:,.5f}"
+    return f"{v:,.8f}"
 
-def bybit_get(path: str, params: dict) -> Optional[dict]:
-    # FIX 3: Fast timeout, no spam logs
+def bybit_get(path:str, params:dict):
     for base in BYBIT_BASES:
-        url = base + path
         try:
-            r = SESSION.get(url, params=params, timeout=15)
-            if r.status_code!= 200: continue
-            data = r.json()
-            if data.get("retCode")!= 0: continue
+            r=SESSION.get(base+path, params=params, timeout=10)
+            if r.status_code!=200: continue
+            data=r.json()
+            if data.get("retCode")!=0: continue
             return data
         except: continue
     return None
 
-def test_bybit_connection() -> str:
-    data = bybit_get("/v5/market/time", {})
-    if data: return "✅ BYBIT CONNECTION WORKS\n\nServer time: received"
-    return "❌ BYBIT CONNECTION FAILED\n\nCheck Render logs"
-
-def get_bybit_klines(symbol: str, interval: str = "15", limit: int = 200):
-    data = bybit_get("/v5/market/kline", {"category":"linear","symbol":symbol,"interval":interval,"limit":limit})
+def get_bybit_klines(symbol, interval="15", limit=200):
+    data=bybit_get("/v5/market/kline", {"category":"linear","symbol":symbol,"interval":interval,"limit":limit})
     if not data: return []
-    rows = data.get("result",{}).get("list",[])
-    candles=[]
+    rows=data.get("result",{}).get("list",[]); c=[]
     for row in rows:
-        try: candles.append({"time":int(row[0]),"open":float(row[1]),"high":float(row[2]),"low":float(row[3]),"close":float(row[4]),"volume":float(row[5])})
+        try: c.append({"time":int(row[0]),"open":float(row[1]),"high":float(row[2]),"low":float(row[3]),"close":float(row[4]),"volume":float(row[5])})
         except: pass
-    candles.reverse()
-    return candles
+    c.reverse(); return c
 
-def get_bybit_price(symbol: str) -> Optional[float]:
-    data = bybit_get("/v5/market/tickers", {"category":"linear","symbol":symbol})
-    if not data: return None
-    rows = data.get("result",{}).get("list",[])
-    if not rows: return None
-    try: return float(rows[0]["lastPrice"])
+def get_okx_klines(symbol, interval="15m", limit=100):
+    try:
+        okx_sym=symbol.replace("USDT","-USDT")
+        r=SESSION.get(f"https://www.okx.com/api/v5/market/candles?instId={okx_sym}&bar={interval}&limit={limit}", timeout=10).json()
+        rows=r.get("data",[]); c=[]
+        for row in rows:
+            try: c.append({"time":int(row[0]),"open":float(row[1]),"high":float(row[2]),"low":float(row[3]),"close":float(row[4]),"volume":float(row[5])})
+            except: pass
+        c.reverse(); return c
+    except: return []
+
+def get_bybit_tickers(symbol):
+    data=bybit_get("/v5/market/tickers", {"category":"linear","symbol":symbol})
+    if not data: return None, None
+    rows=data.get("result",{}).get("list",[])
+    if not rows: return None,None
+    try:
+        last=float(rows[0]["lastPrice"]); mark=float(rows[0].get("markPrice", last))
+        return last, mark
+    except: return None,None
+
+def get_okx_price(symbol):
+    try:
+        okx_sym=symbol.replace("USDT","-USDT")
+        r=SESSION.get(f"https://www.okx.com/api/v5/market/ticker?instId={okx_sym}", timeout=10).json()
+        return float(r["data"][0]["last"])
     except: return None
 
-def get_real_leverage(symbol: str) -> Optional[float]:
-    # FIX 4: Cache + Fallback so never Unavailable
-    if symbol in LEV_CACHE and time.time()-LEV_CACHE[symbol][1] < 3600:
-        return LEV_CACHE[symbol][0]
-    data = bybit_get("/v5/market/instruments-info", {"category":"linear","symbol":symbol})
-    if data:
-        rows = data.get("result",{}).get("list",[])
-        if rows:
-            try:
-                lev = float(rows[0]["leverageFilter"]["maxLeverage"])
-                LEV_CACHE[symbol]=(lev,time.time())
-                print(f"✅ REAL LEV {symbol}={lev}x",flush=True)
-                return lev
-            except: pass
-    # Fallback from real map
-    fb = REAL_LEV_FALLBACK.get(symbol)
-    if fb:
-        print(f"⚠️ LEV FALLBACK {symbol}={fb}x",flush=True)
-        return float(fb)
-    return 25.0
+def get_real_leverage(symbol):
+    # FIXED FOR SMALL AMOUNT - NO MORE 200x
+    if SMALL_ACCOUNT_MODE:
+        if symbol in ["BTCUSDT","ETHUSDT"]: return 15
+        elif symbol in ["SOLUSDT","BNBUSDT","XRPUSDT","AVAXUSDT","LINKUSDT","TRXUSDT"]: return 10
+        else: return 5
+    return float(REAL_LEV_FALLBACK.get(symbol,10))
 
-def ema(values: List[float], period: int) -> Optional[float]:
-    if len(values) < period: return None
-    m = 2.0/(period+1.0); res=sum(values[:period])/period
+def ema(values, period):
+    if len(values)<period: return None
+    m=2.0/(period+1.0); res=sum(values[:period])/period
     for p in values[period:]: res=(p-res)*m+res
     return res
 
-def rsi(values: List[float], period: int = 14) -> Optional[float]:
-    if len(values) <= period: return None
+def rsi(values, period=14):
+    if len(values)<=period: return None
     gains=[]; losses=[]
     for i in range(1,len(values)):
         ch=values[i]-values[i-1]; gains.append(max(ch,0.0)); losses.append(max(-ch,0.0))
@@ -140,128 +121,288 @@ def rsi(values: List[float], period: int = 14) -> Optional[float]:
     for i in range(period,len(gains)):
         ag=(ag*(period-1)+gains[i])/period; al=(al*(period-1)+losses[i])/period
     if al==0: return 100.0
-    rs=ag/al; return 100.0-(100.0/(1.0+rs))
+    return 100.0-(100.0/(1.0+ag/al))
 
-def atr(candles: List[dict], period: int = 14) -> Optional[float]:
-    if len(candles) <= period: return None
+def macd(values):
+    if len(values)<35: return None,None,None
+    e12=ema(values,12); e26=ema(values,26)
+    if e12 is None or e26 is None: return None,None,None
+    macd_line=e12-e26
+    macd_vals=[]
+    for i in range(26, len(values)):
+        sub=values[:i+1]
+        e12s=ema(sub,12); e26s=ema(sub,26)
+        if e12s and e26s: macd_vals.append(e12s-e26s)
+    if len(macd_vals)<9: return macd_line,None,None
+    signal=ema(macd_vals,9)
+    hist=macd_line-signal if signal else None
+    return macd_line, signal, hist
+
+def atr(candles, period=14):
+    if len(candles)<=period: return None
     trs=[]
     for i in range(1,len(candles)):
         c=candles[i]; p=candles[i-1]
-        tr=max(c["high"]-c["low"],abs(c["high"]-p["close"]),abs(c["low"]-p["close"]))
-        trs.append(tr)
+        tr=max(c["high"]-c["low"],abs(c["high"]-p["close"]),abs(c["low"]-p["close"])); trs.append(tr)
     if len(trs)<period: return None
     v=sum(trs[:period])/period
     for tr in trs[period:]: v=(v*(period-1)+tr)/period
     return v
 
-def support_resistance(candles: List[dict], lookback: int = 50):
+def bollinger(values, period=20, mult=2):
+    if len(values)<period: return None,None,None
+    ma=sum(values[-period:])/period
+    var=sum((x-ma)**2 for x in values[-period:])/period
+    std=var**0.5
+    return ma+mult*std, ma, ma-mult*std
+
+def candle_pattern(candles):
+    if len(candles)<3: return "None"
+    c1=candles[-2]; c2=candles[-1]
+    body2=abs(c2["close"]-c2["open"])
+    if c1["close"]<c1["open"] and c2["close"]>c2["open"] and c2["open"]<c1["close"] and c2["close"]>c1["open"]: return "Bullish Engulfing 🟢"
+    if c1["close"]>c1["open"] and c2["close"]<c2["open"] and c2["open"]>c1["close"] and c2["close"]<c1["open"]: return "Bearish Engulfing 🔴"
+    lower_wick=c2["open"]-c2["low"] if c2["close"]>c2["open"] else c2["close"]-c2["low"]
+    upper_wick=c2["high"]-c2["close"] if c2["close"]>c2["open"] else c2["high"]-c2["open"]
+    if lower_wick>body2*2 and upper_wick<body2*0.5: return "Hammer 🔨"
+    if upper_wick>body2*2 and lower_wick<body2*0.5: return "Shooting Star ⭐"
+    if body2 < (c2["high"]-c2["low"])*0.1: return "Doji ⚪"
+    if c2["close"]>c2["open"]: return "Bullish 🟢"
+    return "Bearish 🔴"
+
+def support_resistance(candles, lookback=50):
     s=candles[-lookback:]; return min(c["low"] for c in s), max(c["high"] for c in s)
 
-def analyze_crypto(symbol_code: str) -> Optional[dict]:
-    symbol = CRYPTO.get(symbol_code)
+def analyze_crypto(symbol_code:str):
+    symbol=CRYPTO.get(symbol_code)
     if not symbol: return None
-    candles = get_bybit_klines(symbol,"15",200)
+    candles=get_bybit_klines(symbol,"15",200)
+    if len(candles)<60: candles=get_okx_klines(symbol,"15m",100)
     if len(candles)<60: return None
-    closes=[c["close"] for c in candles]
-    live_price=get_bybit_price(symbol) or closes[-1]
-    ema20=ema(closes,20); ema50=ema(closes,50); rsi14=rsi(closes,14); atr14=atr(candles,14)
-    if None in (ema20,ema50,rsi14,atr14): return None
-    support,resistance=support_resistance(candles)
-    momentum_pct=(closes[-1]-closes[-6])/closes[-6]*100
-    score=0
-    score+=1 if live_price>ema20 else -1
-    score+=1 if ema20>ema50 else -1
-    score+=1 if rsi14>=55 else -1 if rsi14<=45 else 0
-    score+=1 if momentum_pct>0 else -1
-    if score>=2: direction="BUY"
-    elif score<=-2: direction="SELL"
+    closes=[c["close"] for c in candles]; volumes=[c["volume"] for c in candles]
+    last_price, mark_price = get_bybit_tickers(symbol)
+    live_price = last_price or get_okx_price(symbol) or closes[-1]
+    if not mark_price: mark_price=live_price
+    e20=ema(closes,20); e50=ema(closes,50); e200=ema(closes,200)
+    r14=rsi(closes,14); a14=atr(candles,14)
+    macd_line, macd_signal, macd_hist = macd(closes)
+    bb_up, bb_mid, bb_low = bollinger(closes)
+    if None in (e20,e50,r14,a14): return None
+    sup,res=support_resistance(candles)
+    pattern=candle_pattern(candles)
+    mom=(closes[-1]-closes[-6])/closes[-6]*100
+    vol_avg=sum(volumes[-20:])/20; vol_now=volumes[-1]; vol_confirm = vol_now > vol_avg*1.2
+    score=0; reasons=[]
+    if live_price>e20: score+=1; reasons.append("Price > EMA20")
+    else: score-=1; reasons.append("Price < EMA20")
+    if e20>e50: score+=1; reasons.append("EMA20 > EMA50 uptrend")
+    else: score-=1; reasons.append("EMA20 < EMA50 downtrend")
+    if e50 and e200:
+        if e50>e200: score+=1
+        else: score-=1
+    if r14>=55 and r14<70: score+=1; reasons.append(f"RSI {r14:.1f} bullish")
+    elif r14<=45 and r14>30: score-=1; reasons.append(f"RSI {r14:.1f} bearish")
+    if macd_hist is not None:
+        if macd_hist>0: score+=1; reasons.append("MACD bullish")
+        else: score-=1; reasons.append("MACD bearish")
+    if mom>0.3: score+=1
+    elif mom<-0.3: score-=1
+    if "Bullish Engulfing" in pattern or "Hammer" in pattern: score+=1; reasons.append(pattern)
+    elif "Bearish Engulfing" in pattern or "Shooting Star" in pattern: score-=1; reasons.append(pattern)
+    if vol_confirm: score+=1 if score>0 else -1
+    mark_diff = (live_price - mark_price)/mark_price*100 if mark_price else 0
+    if score>=3: direction="BUY"
+    elif score<=-3: direction="SELL"
     else: direction="WAIT"
-    if direction=="BUY": sl=live_price-1.5*atr14; tp1=live_price+1.5*atr14; tp2=live_price+2.5*atr14
-    elif direction=="SELL": sl=live_price+1.5*atr14; tp1=live_price-1.5*atr14; tp2=live_price-2.5*atr14
-    else: sl=tp1=tp2=None
-    leverage=get_real_leverage(symbol)
-    return {"symbol":symbol_code,"pair":symbol,"price":live_price,"ema20":ema20,"ema50":ema50,"rsi":rsi14,"atr":atr14,"support":support,"resistance":resistance,"momentum":momentum_pct,"score":score,"direction":direction,"sl":sl,"tp1":tp1,"tp2":tp2,"leverage":leverage,"timeframe":"15M","source":"Bybit Linear"}
+    if direction=="BUY":
+        sl=live_price-1.5*a14; tp1=live_price+1.5*a14; tp2=live_price+2.5*a14; tp3=live_price+4.0*a14
+    elif direction=="SELL":
+        sl=live_price+1.5*a14; tp1=live_price-1.5*a14; tp2=live_price-2.5*a14; tp3=live_price-4.0*a14
+    else: sl=tp1=tp2=tp3=None
+    lev=get_real_leverage(symbol)
+    return {
+        "symbol":symbol_code,"pair":symbol,"price":live_price,"mark":mark_price,"mark_diff":mark_diff,"candles":candles,
+        "ema20":e20,"ema50":e50,"ema200":e200,"rsi":r14,"atr":a14,"macd":macd_line,"macd_hist":macd_hist,
+        "bb_up":bb_up,"bb_low":bb_low,"support":sup,"resistance":res,"momentum":mom,"pattern":pattern,
+        "vol_confirm":vol_confirm,"score":score,"direction":direction,"sl":sl,"tp1":tp1,"tp2":tp2,"tp3":tp3,"leverage":lev,"reasons":reasons,"timeframe":"15M","source":"Bybit Mark+Last + OKX"
+    }
 
-def get_xauusd() -> Optional[dict]:
+def get_xauusd():
     try:
         url="https://query1.finance.yahoo.com/v8/finance/chart/XAUUSD=X"
-        r=SESSION.get(url,params={"range":"5d","interval":"15m"},timeout=15)
+        r=SESSION.get(url,params={"range":"5d","interval":"15m"},timeout=10)
         if r.status_code!=200: return None
         data=r.json(); result=data["chart"]["result"][0]; quote=result["indicators"]["quote"][0]
         closes=[c for c in quote.get("close",[]) if c is not None]
-        highs=[h for h in quote.get("high",[]) if h is not None]
-        lows=[l for l in quote.get("low",[]) if l is not None]
         if len(closes)<60: return None
-        candles=[{"high":float(h),"low":float(l),"close":float(c)} for h,l,c in zip(highs,lows,closes)]
-        values=[c["close"] for c in candles]; price=values[-1]
-        ema20=ema(values,20); ema50=ema(values,50); rsi14=rsi(values,14)
-        if None in (ema20,ema50,rsi14): return None
-        support=min(c["low"] for c in candles[-50:]); resistance=max(c["high"] for c in candles[-50:])
-        score=(1 if price>ema20 else -1)+(1 if ema20>ema50 else -1)+(1 if rsi14>=55 else -1 if rsi14<=45 else 0)
+        highs=[h for h in quote.get("high",[]) if h is not None]; lows=[l for l in quote.get("low",[]) if l is not None]
+        closes_f=[float(c) for c in closes]
+        candles=[{"high":float(h),"low":float(l),"close":float(c),"open":float(c),"volume":1} for h,l,c in zip(highs,lows,closes_f)]
+        values=closes_f; price=values[-1]
+        e20=ema(values,20); e50=ema(values,50); r14=rsi(values,14)
+        if None in (e20,e50,r14): return None
+        sup=min(c["low"] for c in candles[-50:]); res=max(c["high"] for c in candles[-50:])
+        pattern=candle_pattern(candles)
+        score=(1 if price>e20 else -1)+(1 if e20>e50 else -1)+(1 if r14>=55 else -1 if r14<=45 else 0)
         direction="BUY" if score>=2 else "SELL" if score<=-2 else "WAIT"
-        return {"pair":"XAUUSD","price":price,"ema20":ema20,"ema50":ema50,"rsi":rsi14,"support":support,"resistance":resistance,"direction":direction,"timeframe":"15M","source":"Yahoo Finance"}
+        return {"pair":"XAUUSD","price":price,"candles":candles,"ema20":e20,"ema50":e50,"rsi":r14,"support":sup,"resistance":res,"pattern":pattern,"direction":direction,"timeframe":"15M","source":"Yahoo Finance"}
     except: return None
 
-def crypto_message(a: dict) -> str:
-    lev = f"{a['leverage']:g}x" if a['leverage'] is not None else "25x"
-    lines=[ "🤖 PHILEDIZ V2 ANALYSIS","",f"🪙 Pair: {a['pair']}",f"⏱ Timeframe: {a['timeframe']}",f"💰 Live Price: {fmt_price(a['price'])}",f"📡 Data: {a['source']}","", "📊 INDICATORS",f"RSI14: {a['rsi']:.2f}",f"EMA20: {fmt_price(a['ema20'])}",f"EMA50: {fmt_price(a['ema50'])}",f"ATR14: {fmt_price(a['atr'])}",f"Momentum: {a['momentum']:+.2f}%","", "📍 LEVELS",f"Support: {fmt_price(a['support'])}",f"Resistance: {fmt_price(a['resistance'])}","", f"⚡ Max Bybit Leverage: {lev}","", f"📌 PHILEDIZ SETUP: {a['direction']}",f"🧮 Signal Score: {a['score']}/4"]
-    if a["direction"]!="WAIT":
-        lines+=["",f"💵 Entry: {fmt_price(a['price'])}",f"🛑 SL: {fmt_price(a['sl'])}",f"🎯 TP1: {fmt_price(a['tp1'])}",f"🎯 TP2: {fmt_price(a['tp2'])}"]
-    lines+=["","⚠️ Analytical levels are estimates, not guarantees.","Verify broker price before trading."]
+def create_chart(candles, analysis, symbol):
+    try:
+        data=candles[-100:]
+        n=len(data)
+        times=list(range(n))
+        opens=[c["open"] for c in data]
+        highs=[c["high"] for c in data]
+        lows=[c["low"] for c in data]
+        closes=[c["close"] for c in data]
+        ob_idx=None
+        for i in range(n-10, n-30, -1):
+            if closes[i] < opens[i]:
+                if i+3 < n and closes[i+1]>opens[i+1] and closes[i+2]>opens[i+2]:
+                    ob_idx=i; break
+        if ob_idx is None: ob_idx=n-25
+        ob_high = highs[ob_idx]; ob_low = lows[ob_idx]
+        recent_highs=[]
+        for i in range(10, n-10):
+            if highs[i] == max(highs[i-5:i+5]): recent_highs.append((i, highs[i]))
+        recent_highs = sorted(recent_highs, key=lambda x: x[1], reverse=True)[:3]
+        fig, ax = plt.subplots(figsize=(12,6))
+        fig.patch.set_facecolor('white'); ax.set_facecolor('white')
+        for i in range(n):
+            ax.plot([times[i], times[i]], [lows[i], highs[i]], color='black', linewidth=0.8, alpha=0.9)
+            ax.plot([times[i], times[i]], [opens[i], closes[i]], color='black', linewidth=2.2)
+        ob_start = ob_idx; ob_end = n-5
+        ax.add_patch(plt.Rectangle((ob_start, ob_low), ob_end-ob_start, ob_high-ob_low, facecolor='#a8c0ff', edgecolor='#4a7bff', alpha=0.6, linewidth=1))
+        for idx, price in recent_highs:
+            ax.axhline(price, color='black', linewidth=0.9, alpha=0.8)
+            ax.text(n+1, price, f'{price:.2f}', va='center', ha='left', fontsize=8, bbox=dict(boxstyle='square,pad=0.2', facecolor='black', edgecolor='black'), color='white')
+        if analysis["direction"]=="BUY":
+            curr_idx=n-1; curr_price=closes[-1]
+            path_x=[curr_idx-8, curr_idx-4, ob_idx+5, ob_idx+12, ob_idx+18, n+15]
+            path_y=[
+                curr_price+(recent_highs[0][1]-curr_price)*0.3 if recent_highs else curr_price+2,
+                curr_price-0.5*(curr_price-ob_low),
+                (ob_low+ob_high)/2,
+                ob_high+(recent_highs[1][1]-ob_high)*0.5 if len(recent_highs)>1 else ob_high*1.01,
+                recent_highs[0][1]*0.995 if recent_highs else ob_high*1.03,
+                recent_highs[0][1]*1.02 if recent_highs else ob_high*1.05
+            ]
+            ax.plot(path_x, path_y, color='black', linewidth=1.2)
+            ax.annotate('', xy=(path_x[-1], path_y[-1]), xytext=(path_x[-2], path_y[-2]), arrowprops=dict(facecolor='black', edgecolor='black', arrowstyle='->', lw=1.2))
+        else:
+            curr_idx=n-1; curr_price=closes[-1]
+            path_x=[curr_idx-8, curr_idx-4, ob_idx+5, n+10]
+            path_y=[curr_price, curr_price+0.5, ob_low*0.99, ob_low*0.97]
+            ax.plot(path_x, path_y, color='black', linewidth=1.2)
+            ax.annotate('', xy=(path_x[-1], path_y[-1]), xytext=(path_x[-2], path_y[-2]), arrowprops=dict(facecolor='black', edgecolor='black', arrowstyle='->', lw=1.2))
+        ax.set_xlim(-5, n+20)
+        ax.get_xaxis().set_visible(False)
+        ax.tick_params(axis='y', colors='black', labelsize=8)
+        ax.spines['top'].set_visible(False); ax.spines['bottom'].set_visible(False); ax.spines['left'].set_visible(False); ax.spines['right'].set_visible(False)
+        ax.set_title(f'{symbol} - Order Block + BOS - {analysis["direction"]} | {analysis["pattern"]}', color='black', fontsize=10, loc='left')
+        plt.tight_layout()
+        path="/tmp/philediz_smc_chart.png"
+        plt.savefig(path, dpi=300, facecolor='white', bbox_inches='tight')
+        plt.close()
+        return path
+    except Exception as e:
+        print(f"Chart error {e}", flush=True)
+        return None
+
+def crypto_message(a: dict)->str:
+    lev=f"{a['leverage']:g}x"
+    direction=a['direction']
+    emoji="🟢 BUY" if direction=="BUY" else "🔴 SELL" if direction=="SELL" else "⚪ WAIT"
+    vol_txt="✅ High" if a['vol_confirm'] else "⚪ Normal"
+    hist_emoji="🟢" if a['macd_hist'] and a['macd_hist']>0 else "🔴" if a['macd_hist'] and a['macd_hist']<0 else "⚪"
+    lines=[
+        "🤖 PHILEDIZ V2 PRO ANALYSIS","",
+        f"🪙 Pair: {a['pair']}",
+        f"⏱ Timeframe: {a['timeframe']}",
+        f"💰 Last: {fmt_price(a['price'])}",
+        f"🎯 Mark: {fmt_price(a['mark'])} ({a['mark_diff']:+.3f}%)",
+        f"📡 Source: {a['source']}","",
+        "📊 INDICATORS (Candles+Mark+RSI+EMA+MACD)",
+        f"🕯 Candle: {a['pattern']}",
+        f"📈 EMA20: {fmt_price(a['ema20'])} | EMA50: {fmt_price(a['ema50'])}",
+        f"💪 RSI14: {a['rsi']:.1f}",
+        f"📉 MACD: {hist_emoji} {a['macd']:.4f}" if a['macd'] else "📉 MACD: N/A",
+        f"📦 Volume: {vol_txt}",
+        f"⚡ ATR: {fmt_price(a['atr'])} | Mom: {a['momentum']:+.2f}%","",
+        f"📌 SETUP: {emoji} (Score {a['score']}/10)",
+    ]
+    if a['reasons']: lines+=["","🔍 Logic:"]+[f"• {r}" for r in a['reasons'][:5]]
+    if direction!="WAIT":
+        entry=a['price']; sl_pct=(a['sl']-entry)/entry*100; tp1_pct=(a['tp1']-entry)/entry*100; tp2_pct=(a['tp2']-entry)/entry*100; tp3_pct=(a['tp3']-entry)/entry*100
+        lines+=["","━━━━━━━━━━━━━━━━━━",f"{emoji} {a['symbol']}","",f"💵 Entry: {fmt_price(entry)} | ⚡ Leverage: {lev} (Small Account Safe)",f"🛑 SL: {fmt_price(a['sl'])} ({sl_pct:+.2f}%)",f"🎯 TP1: {fmt_price(a['tp1'])} ({tp1_pct:+.2f}%)",f"🎯 TP2: {fmt_price(a['tp2'])} ({tp2_pct:+.2f}%)",f"🎯 TP3: {fmt_price(a['tp3'])} ({tp3_pct:+.2f}%)","━━━━━━━━━━━━━━━━━━","","📸 SMC Chart above 👆","💡 Move SL to BE after TP1"]
+    else:
+        lines+=["",f"⚡ Safe Leverage: {lev} (for small account)","","⏳ WAIT - Low confluence","📸 SMC Chart above 👆"]
+    lines+=["","⚠️ Not financial advice."]
     return "\n".join(lines)
 
-def xau_message(a: dict) -> str:
-    return "\n".join([ "🤖 PHILEDIZ V2 ANALYSIS","","🥇 Pair: XAUUSD",f"⏱ Timeframe: {a['timeframe']}",f"💰 Live Price: {fmt_price(a['price'])}",f"📡 Data: {a['source']}","","📊 INDICATORS",f"RSI14: {a['rsi']:.2f}",f"EMA20: {fmt_price(a['ema20'])}",f"EMA50: {fmt_price(a['ema50'])}","","📍 LEVELS",f"Support: {fmt_price(a['support'])}",f"Resistance: {fmt_price(a['resistance'])}","",f"📌 PHILEDIZ SETUP: {a['direction']}","","⚠️ Verify broker gold price before trading."])
+def xau_message(a: dict)->str:
+    emoji="🟢 BUY" if a['direction']=="BUY" else "🔴 SELL" if a['direction']=="SELL" else "⚪ WAIT"
+    return "\n".join(["🤖 PHILEDIZ V2 PRO ANALYSIS","","🥇 Pair: XAUUSD",f"⏱ {a['timeframe']}",f"💰 Price: {fmt_price(a['price'])}",f"📡 {a['source']}","","📊 INDICATORS",f"🕯 {a['pattern']}",f"EMA20: {fmt_price(a['ema20'])} | EMA50: {fmt_price(a['ema50'])}",f"RSI14: {a['rsi']:.1f}","","📍 Support: {fmt_price(a['support'])} | Resistance: {fmt_price(a['resistance'])}","",f"📌 SETUP: {emoji} {a['direction']}","📸 SMC Chart below 👇"])
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 PHILEDIZ V2 is online!\n\nSend:\n/analyze BTC\n/analyze ETH\n/analyze XAUUSD\n\nOr simply send:\nBTC\nETH\nSOL\nXAUUSD")
+    await update.message.reply_text("🤖 PHILEDIZ V2 FINAL FIXED!\n\n✅ SMC White Chart (like screenshot)\n✅ Small Leverage 5x/10x/15x\n✅ XAUUSD enabled\n✅ Candles+Mark+RSI+EMA+MACD\n\nSend /analyze BTC")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📚 PHILEDIZ V2\n\nCommands:\n/start\n/help\n/testbybit\n/analyze BTC\nSupported:\n"+", ".join(CRYPTO.keys()))
+    await update.message.reply_text("📚 PHILEDIZ V2 FINAL\n\nEvery signal = SMC chart + text with small safe leverage\n\nCommands: /start /analyze BTC /analyze XAUUSD /testbybit")
 
 async def testbybit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🧪 Testing Bybit...")
-    result=test_bybit_connection()
-    await update.message.reply_text(result)
+    last, mark = get_bybit_tickers("BTCUSDT")
+    if last: await update.message.reply_text(f"✅ BYBIT WORKS\nLast: {last}\nMark: {mark}\n✅ Safe leverage: 15x BTC, 10x SOL, 5x PEPE\n✅ XAUUSD enabled")
+    else:
+        okx=get_okx_price("BTCUSDT")
+        if okx: await update.message.reply_text(f"⚠️ Bybit blocked, OKX fallback WORKS {okx}\n✅ Safe leverage active")
+        else: await update.message.reply_text("❌ Both blocked")
 
 async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Example:\n/analyze BTC"); return
-    symbol=clean_symbol(context.args[0])
-    await run_analysis(update,symbol)
+    if not context.args: await update.message.reply_text("Example: /analyze BTC or /analyze XAUUSD"); return
+    symbol=clean_symbol(context.args[0]); await run_analysis(update,symbol)
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text=(update.message.text or "").strip()
     if not text: return
     if len(text.split())==1:
         symbol=clean_symbol(text)
-        if symbol in CRYPTO or symbol=="XAUUSD":
-            await run_analysis(update,symbol); return
-    await update.message.reply_text("Send BTC, ETH, SOL, XAUUSD or /analyze BTC")
+        if symbol in CRYPTO or symbol=="XAUUSD": await run_analysis(update,symbol); return
 
 async def run_analysis(update: Update, symbol: str):
-    await update.message.reply_text(f"🔎 PHILEDIZ checking live {symbol}...")
+    await update.message.reply_text(f"🔎 PHILEDIZ analyzing {symbol} + drawing SMC chart...")
     if symbol=="XAUUSD":
         result=get_xauusd()
-        if result: await update.message.reply_text(xau_message(result))
-        else: await update.message.reply_text("❌ XAUUSD data unavailable")
+        if not result: await update.message.reply_text("❌ XAUUSD unavailable"); return
+        chart_path=create_chart(result["candles"], {"direction":result["direction"],"price":result["price"],"support":result["support"],"resistance":result["resistance"],"pattern":result["pattern"],"score":3}, "XAUUSD")
+        if chart_path:
+            try: await update.message.reply_photo(photo=open(chart_path,'rb'), caption=f"📸 XAUUSD SMC - Order Block Chart - {result['direction']}")
+            except: pass
+        await update.message.reply_text(xau_message(result))
         return
     result=analyze_crypto(symbol)
-    if result: await update.message.reply_text(crypto_message(result))
-    else: await update.message.reply_text("❌ Bybit data unavailable - try /testbybit")
+    if not result: await update.message.reply_text("❌ Live data unavailable. Try /testbybit"); return
+    chart_path=create_chart(result["candles"], result, symbol)
+    if chart_path:
+        try:
+            await update.message.reply_photo(photo=open(chart_path,'rb'), caption=f"📸 {symbol} SMC PRE-SETUP | {result['direction']} | OB + BOS | Entry {fmt_price(result['price'])} | Lev {result['leverage']:g}x Safe")
+        except Exception as e:
+            print(f"Photo fail {e}", flush=True)
+    await update.message.reply_text(crypto_message(result))
 
 def run_flask(): app.run(host="0.0.0.0",port=PORT,debug=False,use_reloader=False)
 
 def run_bot():
-    if not BOT_TOKEN:
-        print("BOT_TOKEN missing - waiting for ENV",flush=True); return
+    if not BOT_TOKEN: print("BOT_TOKEN missing",flush=True); return
     application=ApplicationBuilder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start",start))
     application.add_handler(CommandHandler("help",help_command))
     application.add_handler(CommandHandler("testbybit",testbybit_command))
     application.add_handler(CommandHandler("analyze",analyze_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,text_handler))
-    print("🤖 PHILEDIZ V2 FIXED starting...",flush=True)
+    print("🤖 PHILEDIZ V2 FINAL FIXED - SMC CHART + SMALL LEVERAGE",flush=True)
     application.run_polling(drop_pending_updates=True)
 
 if __name__=="__main__":
