@@ -1,13 +1,12 @@
 import os,re,threading,requests
 from flask import Flask
-from telegram import Update,InlineKeyboardButton,InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder,CommandHandler,MessageHandler,CallbackQueryHandler,ContextTypes,filters
+from telegram import InlineKeyboardButton,InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder,CommandHandler,MessageHandler,CallbackQueryHandler,filters
 
 BOT_TOKEN=os.getenv("BOT_TOKEN","").strip()
 PORT=int(os.getenv("PORT","10000"))
 app=Flask(__name__)
 
-# YOUR ORIGINAL COINS - I NO DELETE ANYTHING
 CRYPTO={"BTC":"BTCUSDT","ETH":"ETHUSDT","BNB":"BNBUSDT","SOL":"SOLUSDT","XRP":"XRPUSDT","DOGE":"DOGEUSDT","ADA":"ADAUSDT","AVAX":"AVAXUSDT","LINK":"LINKUSDT","TRX":"TRXUSDT","DOT":"DOTUSDT","MATIC":"MATICUSDT","LTC":"LTCUSDT","BCH":"BCHUSDT","UNI":"UNIUSDT","ATOM":"ATOMUSDT","ETC":"ETCUSDT","FIL":"FILUSDT","PEPE":"PEPEUSDT","BONK":"BONKUSDT","SHIB":"SHIBUSDT","FLOKI":"FLOKIUSDT","FARTCOIN":"FARTCOINUSDT","WIF":"WIFUSDT","BABY":"BABYUSDT","BOME":"BOMEUSDT","PAXG":"PAXGUSDT"}
 SESSION=requests.Session()
 SESSION.headers.update({"Cache-Control":"no-cache","Pragma":"no-cache"})
@@ -15,7 +14,7 @@ SESSION.headers.update({"Cache-Control":"no-cache","Pragma":"no-cache"})
 @app.get("/")
 def home(): return "PHILEDIZ 1H REAL PIP OK",200
 @app.get("/health")
-def health(): return {"status":"ok"},200
+def health(): return {"ok":True},200
 
 def clean(t):
     t=t.upper().strip().replace("/","").replace("-","").replace("_","")
@@ -50,11 +49,6 @@ def get_live_price(sym):
             lst=r.get("result",{}).get("list",[])
             if lst: return float(lst[0]["lastPrice"])
     except: pass
-    try:
-        okx_sym=sym.replace("USDT","-USDT")
-        r=SESSION.get(f"https://www.okx.com/api/v5/market/ticker?instId={okx_sym}",timeout=5).json()
-        return float(r["data"][0]["last"])
-    except: pass
     return None
 
 def ema(vals,p):
@@ -85,15 +79,15 @@ def analyze_crypto(code):
     closes=[x["c"] for x in kl]
     live=get_live_price(sym)
     price=live if live else closes[-1]
-    e20=ema(closes,20); e50=ema(closes,50); r=rsi(closes); a=atr(kl)
+    e20=ema(closes,20); e50=ema(closes,50); rr=rsi(closes); a=atr(kl)
     if not e20 or not e50: return None
-    score=(1 if price>e20 else -1)+(1 if e20>e50 else -1)+(1 if r>55 else -1 if r<45 else 0)
+    score=(1 if price>e20 else -1)+(1 if e20>e50 else -1)+(1 if rr>55 else -1 if rr<45 else 0)
     direction="BUY" if score>=2 else "SELL" if score<=-2 else "WAIT"
     lev=15 if code in ["BTC","ETH"] else 10 if code in ["SOL","BNB","XRP","PAXG"] else 5
     if direction=="BUY": sl=price-1.5*a; tp1=price+1.5*a; tp2=price+2.5*a; tp3=price+4*a
     elif direction=="SELL": sl=price+1.5*a; tp1=price-1.5*a; tp2=price-2.5*a; tp3=price-4*a
     else: sl=tp1=tp2=tp3=None
-    return {"code":code,"sym":sym,"price":price,"live":live,"e20":e20,"e50":e50,"rsi":r,"atr":a,"dir":direction,"sl":sl,"tp1":tp1,"tp2":tp2,"tp3":tp3,"lev":lev,"score":score,"tf":"1H"}
+    return {"sym":sym,"price":price,"e20":e20,"e50":e50,"rsi":rr,"dir":direction,"sl":sl,"tp1":tp1,"tp2":tp2,"tp3":tp3,"lev":lev,"score":score}
 
 def get_xauusd_real():
     real=None
@@ -117,15 +111,15 @@ def get_xauusd_real():
         offset=real-paxg_price
         for k in kl: k["h"]+=offset; k["l"]+=offset; k["c"]+=offset
         closes=[x["c"] for x in kl]
-        source=f"REAL XAUUSD ${display_price:.2f} LIVE (gold-api) - 1H"
+        source=f"REAL XAUUSD ${display_price:.2f} LIVE - 1H"
     else:
-        source=f"PAXG ${display_price:.2f} (proxy) - 1H"
-    e20=ema(closes,20); e50=ema(closes,50); r=rsi(closes); a=atr(kl)
+        source=f"PAXG ${display_price:.2f} proxy - 1H"
+    e20=ema(closes,20); e50=ema(closes,50); rr=rsi(closes); a=atr(kl)
     score=(1 if display_price>e20 else -1)+(1 if e20>e50 else -1)
     direction="BUY" if score>=1 else "SELL"
     if direction=="BUY": sl=display_price-1.2*a; tp1=display_price+1*a; tp2=display_price+2*a; tp3=display_price+3.5*a
     else: sl=display_price+1.2*a; tp1=display_price-1*a; tp2=display_price-2*a; tp3=display_price-3.5*a
-    return {"price":display_price,"real":real,"paxg":paxg_price,"e20":e20,"e50":e50,"rsi":r,"atr":a,"dir":direction,"sl":sl,"tp1":tp1,"tp2":tp2,"tp3":tp3,"src":source,"score":score,"tf":"1H"}
+    return {"price":display_price,"e20":e20,"e50":e50,"rsi":rr,"dir":direction,"sl":sl,"tp1":tp1,"tp2":tp2,"tp3":tp3,"src":source,"score":score}
 
 def coins_kb():
     ks=list(CRYPTO.keys()); btns=[]; row=[]
@@ -133,22 +127,22 @@ def coins_kb():
         row.append(InlineKeyboardButton(c,callback_data=f"C_{c}"))
         if len(row)==3: btns.append(row); row=[]
     if row: btns.append(row)
-    btns.append([InlineKeyboardButton("🥇 XAUUSD 1H REAL $4154",callback_data="C_XAUUSD")])
+    btns.append([InlineKeyboardButton("🥇 XAUUSD 1H REAL + PIP",callback_data="C_XAUUSD")])
     return InlineKeyboardMarkup(btns)
 
-def mt5_kb(): return InlineKeyboardMarkup([[InlineKeyboardButton("🥇 XAUUSD 1H REAL",callback_data="C_XAUUSD")],[InlineKeyboardButton("📋 CRYPTO 1H",callback_data="M_COINS")]])
+def mt5_kb(): return InlineKeyboardMarkup([[InlineKeyboardButton("🥇 XAUUSD REAL PIP",callback_data="C_XAUUSD")],[InlineKeyboardButton("📋 CRYPTO 1H",callback_data="M_COINS")]])
 
-async def start(u,c): await u.message.reply_text("🤖 PHILEDIZ 1H REAL PIP ✅\n\n✅ Crypto REAL live price\n✅ XAUUSD REAL $4154 + PIP\n✅ Leverage dey\n✅ 1H timeframe\n\n/coins → Crypto\n/mt5 → XAUUSD PIP",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 1H CRYPTO",callback_data="M_COINS"),InlineKeyboardButton("🥇 1H XAUUSD PIP",callback_data="M_MT5")]]))
+async def start(u,c): await u.message.reply_text("🤖 PHILEDIZ 1H REAL PIP ✅\n\n✅ REAL live price\n✅ XAUUSD PIP + Leverage 10x\n✅ Crypto Lev 15x/10x/5x\n✅ 1H timeframe\n\n/coins /mt5",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 1H CRYPTO",callback_data="M_COINS"),InlineKeyboardButton("🥇 XAUUSD PIP",callback_data="M_MT5")]]))
 async def coins_cmd(u,c): await u.message.reply_text("📋 SELECT COIN - 1H REAL LIVE:",reply_markup=coins_kb())
-async def mt5_cmd(u,c): await u.message.reply_text("🥇 MT5 GOLD - 1H REAL + PIP:",reply_markup=mt5_kb())
+async def mt5_cmd(u,c): await u.message.reply_text("🥇 MT5 GOLD - REAL + PIP:",reply_markup=mt5_kb())
 async def analyze_cmd(u,c):
-    if not c.args: await u.message.reply_text("Ex: /analyze BTC or XAUUSD",reply_markup=coins_kb()); return
+    if not c.args: await u.message.reply_text("Ex: /analyze BTC",reply_markup=coins_kb()); return
     await run(u,clean(c.args[0]))
 async def btn(u,c):
     q=u.callback_query; await q.answer(); d=q.data
     if d=="M_COINS": await q.edit_message_text("📋 SELECT COIN - 1H REAL:",reply_markup=coins_kb()); return
     if d=="M_MT5": await q.edit_message_text("🥇 MT5 1H REAL PIP:",reply_markup=mt5_kb()); return
-    if d.startswith("C_"): await q.edit_message_text(f"🔎 {d[2:]} 1H REAL fetching..."); await run(q,d[2:])
+    if d.startswith("C_"): await q.edit_message_text(f"🔎 {d[2:]} 1H REAL..."); await run(q,d[2:])
 async def txt(u,c):
     t=(u.message.text or "").strip()
     if len(t.split())==1:
@@ -168,16 +162,30 @@ async def run(upd,sym):
         pip_tp1=abs(r['tp1']-r['price'])/PIP
         pip_tp2=abs(r['tp2']-r['price'])/PIP
         pip_tp3=abs(r['tp3']-r['price'])/PIP
-        await send(f"🤖 XAUUSD MT5 1H REAL + PIP ✅\n\n💰 REAL Price: {fmt(r['price'])} (live)\n📡 {r['src']}\n⏱ Timeframe: {r['tf']}\n📊 EMA20 {fmt(r['e20'])} EMA50 {fmt(r['e50'])} RSI {r['rsi']:.1f}\n\n📌 {r['dir']} Score {r['score']}/10\n\n💵 Entry: {fmt(r['price'])} Lev 10x\n🛑 SL: {fmt(r['sl'])} ({pip_sl:.0f} pips)\n🎯 TP1: {fmt(r['tp1'])} ({pip_tp1:.0f} pips)\n🎯 TP2: {fmt(r['tp2'])} ({pip_tp2:.0f} pips)\n🎯 TP3: {fmt(r['tp3'])} ({pip_tp3:.0f} pips)\n\n⚠️ Pip = $0.10 (MT5 Gold standard)",reply_markup=mt5_kb())
+        await send(f"🤖 XAUUSD MT5 1H REAL + PIP ✅\n\n💰 Price: {fmt(r['price'])} live\n📡 {r['src']}\n📊 EMA20 {fmt(r['e20'])} EMA50 {fmt(r['e50'])} RSI {r['rsi']:.1f}\n\n📌 {r['dir']} Score {r['score']}/10\n\n💵 Entry: {fmt(r['price'])} Lev 10x\n🛑 SL: {fmt(r['sl'])} ({pip_sl:.0f} pips)\n🎯 TP1: {fmt(r['tp1'])} ({pip_tp1:.0f} pips)\n🎯 TP2: {fmt(r['tp2'])} ({pip_tp2:.0f} pips)\n🎯 TP3: {fmt(r['tp3'])} ({pip_tp3:.0f} pips)\n\n⚠️ Pip = $0.10 MT5 standard",reply_markup=mt5_kb())
         return
     r=analyze_crypto(sym)
     if not r: await send("❌ Data unavailable",reply_markup=coins_kb()); return
-    live_txt=f"REAL LIVE {fmt(r['price'])}" if r['live'] else f"{fmt(r['price'])}"
     if r["dir"]!="WAIT":
-        await send(f"🤖 {r['sym']} 1H REAL ✅\n💰 Price: {live_txt} (live)\n📊 EMA20 {fmt(r['e20'])} EMA50 {fmt(r['e50'])} RSI {r['rsi']:.1f}\n⏱ {r['tf']}\n\n📌 {r['dir']} Score {r['score']}\n\n💵 Entry: {fmt(r['price'])} Lev {r['lev']}x\n🛑 SL: {fmt(r['sl'])}\n🎯 TP1: {fmt(r['tp1'])}\n🎯 TP2: {fmt(r['tp2'])}\n🎯 TP3: {fmt(r['tp3'])}",reply_markup=coins_kb())
+        await send(f"🤖 {r['sym']} 1H REAL ✅\n💰 {fmt(r['price'])} live\n📊 EMA20 {fmt(r['e20'])} EMA50 {fmt(r['e50'])} RSI {r['rsi']:.1f}\n📌 {r['dir']} Score {r['score']}\n\n💵 Entry: {fmt(r['price'])} Lev {r['lev']}x\n🛑 SL: {fmt(r['sl'])}\n🎯 TP1: {fmt(r['tp1'])}\n🎯 TP2: {fmt(r['tp2'])}\n🎯 TP3: {fmt(r['tp3'])}",reply_markup=coins_kb())
     else:
-        await send(f"🤖 {r['sym']} 1H WAIT\n💰 {live_txt} live Score {r['score']}",reply_markup=coins_kb())
+        await send(f"🤖 {r['sym']} 1H WAIT Score {r['score']} Price {fmt(r['price'])} live",reply_markup=coins_kb())
 
 def run_flask(): app.run(host="0.0.0.0",port=PORT)
+
 def run_bot():
-    if not BOT_TOKEN: print("No
+    if not BOT_TOKEN:
+        print("No BOT_TOKEN set")
+        return
+    a=ApplicationBuilder().token(BOT_TOKEN).build()
+    a.add_handler(CommandHandler("start",start))
+    a.add_handler(CommandHandler("coins",coins_cmd))
+    a.add_handler(CommandHandler("mt5",mt5_cmd))
+    a.add_handler(CommandHandler("analyze",analyze_cmd))
+    a.add_handler(CallbackQueryHandler(btn))
+    a.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,txt))
+    a.run_polling(drop_pending_updates=True)
+
+if __name__=="__main__":
+    threading.Thread(target=run_flask,daemon=True).start()
+    run_bot()
