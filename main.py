@@ -13,7 +13,7 @@ SESSION.headers.update({"User-Agent":"Mozilla/5.0"})
 CACHE={}
 
 @app.get("/")
-def home(): return "PHILEDIZ CACHE FIX OK",200
+def home(): return "PHILEDIZ OKX MAIN OK",200
 @app.get("/health")
 def health(): return {"ok":True},200
 
@@ -27,71 +27,63 @@ def clean(t):
 def fmt(v): return f"{v:,.2f}" if v>=1000 else f"{v:,.4f}" if v>=1 else f"{v:,.6f}"
 
 def get_klines(sym):
-    # cache 3 mins
-    if sym in CACHE and time.time()-CACHE[sym][0]<180:
+    if sym in CACHE and time.time()-CACHE[sym][0]<300:
         return CACHE[sym][1]
 
-    # For memecoins use Gate first (fastest for BONK,FARTCOIN,WIF,BABY)
-    MEME=["BONKUSDT","FARTCOINUSDT","WIFUSDT","BABYUSDT","BOMEUSDT","PEPEUSDT","FLOKIUSDT","SHIBUSDT"]
-
-    def try_gate():
-        try:
-            pair=sym.replace("USDT","_USDT")
-            r=SESSION.get(f"https://api.gateio.ws/api/v4/spot/candlesticks",params={"currency_pair":pair,"interval":"1h","limit":"200"},timeout=4).json()
-            if isinstance(r,list) and len(r)>=50:
-                kl=[{"h":float(x[3]),"l":float(x[4]),"c":float(x[2])} for x in r]
-                return kl
-        except: pass
-        return []
-
-    def try_binance_vision():
-        try:
-            # This domain works on Render when binance.com is blocked
-            r=SESSION.get("https://data-api.binance.vision/api/v3/klines",params={"symbol":sym,"interval":"1h","limit":200},timeout=4).json()
-            if isinstance(r,list) and len(r)>=50:
-                return [{"h":float(x[2]),"l":float(x[3]),"c":float(x[4])} for x in r]
-        except: pass
-        return []
-
-    def try_okx():
-        try:
-            inst=sym.replace("USDT","-USDT")
-            r=SESSION.get("https://www.okx.com/api/v5/market/candles",params={"instId":inst,"bar":"1H","limit":"200"},timeout=4).json()
-            data=r.get("data",[])
-            if len(data)>=50:
-                c=[{"h":float(row[2]),"l":float(row[3]),"c":float(row[4])} for row in data]
-                c.reverse()
-                return c
-        except: pass
-        return []
-
-    kl=[]
-    if sym in MEME:
-        kl=try_gate()
-        if len(kl)<50: kl=try_binance_vision()
-        if len(kl)<50: kl=try_okx()
-    else:
-        kl=try_binance_vision()
-        if len(kl)<50: kl=try_okx()
-        if len(kl)<50: kl=try_gate()
-
-    if len(kl)>=50:
-        CACHE[sym]=(time.time(),kl)
-    return kl
-
-def get_price(sym):
-    try:
-        r=SESSION.get("https://data-api.binance.vision/api/v3/ticker/price",params={"symbol":sym},timeout=3).json()
-        if "price" in r: return float(r["price"])
-    except: pass
+    # 1) OKX FIRST - works for 99% on Render
     try:
         inst=sym.replace("USDT","-USDT")
-        r=SESSION.get("https://www.okx.com/api/v5/market/ticker",params={"instId":inst},timeout=3).json()
+        r=SESSION.get("https://www.okx.com/api/v5/market/candles",params={"instId":inst,"bar":"1H","limit":"200"},timeout=10).json()
+        data=r.get("data",[])
+        if len(data)>=50:
+            c=[{"h":float(row[2]),"l":float(row[3]),"c":float(row[4])} for row in data]
+            c.reverse()
+            CACHE[sym]=(time.time(),c)
+            print(f"OKX OK {sym} {len(c)}")
+            return c
+    except Exception as e:
+        print(f"OKX FAIL {sym} {e}")
+
+    # 2) GATE.IO - for memecoins
+    try:
+        pair=sym.replace("USDT","_USDT")
+        r=SESSION.get("https://api.gateio.ws/api/v4/spot/candlesticks",params={"currency_pair":pair,"interval":"1h","limit":"200"},timeout=10).json()
+        if isinstance(r,list) and len(r)>=50:
+            kl=[{"h":float(x[3]),"l":float(x[4]),"c":float(x[2])} for x in r]
+            CACHE[sym]=(time.time(),kl)
+            print(f"GATE OK {sym}")
+            return kl
+    except Exception as e:
+        print(f"GATE FAIL {sym} {e}")
+
+    # 3) Binance Vision last
+    try:
+        r=SESSION.get("https://data-api.binance.vision/api/v3/klines",params={"symbol":sym,"interval":"1h","limit":200},timeout=10).json()
+        if isinstance(r,list) and len(r)>=50:
+            kl=[{"h":float(x[2]),"l":float(x[3]),"c":float(x[4])} for x in r]
+            CACHE[sym]=(time.time(),kl)
+            print(f"BINANCE VISION OK {sym}")
+            return kl
+    except Exception as e:
+        print(f"BINANCE FAIL {sym} {e}")
+
+    print(f"ALL FAIL {sym}")
+    return []
+
+def get_price(sym):
+    # OKX ticker first
+    try:
+        inst=sym.replace("USDT","-USDT")
+        r=SESSION.get("https://www.okx.com/api/v5/market/ticker",params={"instId":inst},timeout=5).json()
         return float(r["data"][0]["last"])
     except: pass
     try:
+        r=SESSION.get("https://data-api.binance.vision/api/v3/ticker/price",params={"symbol":sym},timeout=5).json()
+        if "price" in r: return float(r["price"])
+    except: pass
+    try:
         pair=sym.replace("USDT","_USDT")
-        r=SESSION.get(f"https://api.gateio.ws/api/v4/spot/tickers",params={"currency_pair":pair},timeout=3).json()
+        r=SESSION.get(f"https://api.gateio.ws/api/v4/spot/tickers",params={"currency_pair":pair},timeout=5).json()
         if isinstance(r,list) and r: return float(r[0]["last"])
     except: pass
     return None
@@ -117,7 +109,9 @@ def atr(c):
 def analyze(code):
     sym=CRYPTO.get(code)
     kl=get_klines(sym)
-    if len(kl)<50: return None
+    if len(kl)<50:
+        print(f"ANALYZE FAIL klines {code} {len(kl)}")
+        return None
     closes=[x["c"] for x in kl]
     live=get_price(sym)
     price=live if live else closes[-1]
@@ -134,7 +128,7 @@ def analyze(code):
 def get_xau():
     real=None
     try:
-        r=SESSION.get("https://api.gold-api.com/price/XAU",timeout=3)
+        r=SESSION.get("https://api.gold-api.com/price/XAU",timeout=4)
         if r.status_code==200:
             real=float(r.json().get("price",0))
             if not (3000<real<5000): real=None
@@ -150,7 +144,7 @@ def get_xau():
         closes=[x["c"] for x in kl]
         src=f"REAL XAUUSD ${price:.2f} LIVE"
     else:
-        src=f"PAXG ${price:.2f} via Gate/Binance Vision"
+        src=f"PAXG ${price:.2f} OKX"
     e20=ema(closes,20); e50=ema(closes,50); rr=rsi(closes); a=atr(kl)
     score=(1 if price>e20 else -1)+(1 if e20>e50 else -1)
     d="BUY" if score>=1 else "SELL"
@@ -168,19 +162,19 @@ def coins_kb():
     return InlineKeyboardMarkup(btns)
 def mt5_kb(): return InlineKeyboardMarkup([[InlineKeyboardButton("🥇 XAUUSD REAL PIP",callback_data="C_XAUUSD")],[InlineKeyboardButton("📋 CRYPTO ALL",callback_data="M_COINS")]])
 
-async def start(u,c): await u.message.reply_text("🤖 PHILEDIZ FIXED ✅ All coins now work (Vision API)",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 CRYPTO",callback_data="M_COINS"),InlineKeyboardButton("🥇 XAUUSD PIP",callback_data="M_MT5")]]))
-async def coins_cmd(u,c): await u.message.reply_text("📋 SELECT COIN - FIXED ALL:",reply_markup=coins_kb())
+async def start(u,c): await u.message.reply_text("🤖 PHILEDIZ OKX MAIN ✅ XRP ADA MATIC now work",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 CRYPTO",callback_data="M_COINS"),InlineKeyboardButton("🥇 XAUUSD PIP",callback_data="M_MT5")]]))
+async def coins_cmd(u,c): await u.message.reply_text("📋 SELECT COIN - OKX MAIN FIXED:",reply_markup=coins_kb())
 async def mt5_cmd(u,c): await u.message.reply_text("🥇 MT5 GOLD:",reply_markup=mt5_kb())
 async def analyze_cmd(u,c):
     if not c.args: await u.message.reply_text("Ex: /analyze BTC",reply_markup=coins_kb()); return
     await run(u,clean(c.args[0]))
 async def btn(u,c):
     q=u.callback_query; await q.answer(); d=q.data
-    if d=="M_COINS": await q.edit_message_text("📋 SELECT COIN - ALL WORKING NOW:",reply_markup=coins_kb()); return
+    if d=="M_COINS": await q.edit_message_text("📋 SELECT COIN - OKX MAIN:",reply_markup=coins_kb()); return
     if d=="M_MT5": await q.edit_message_text("🥇 MT5 PIP:",reply_markup=mt5_kb()); return
     if d.startswith("C_"):
         code=d[2:]
-        await q.edit_message_text(f"🔎 {code} fast fetching...")
+        await q.edit_message_text(f"🔎 {code} OKX fetching...")
         await run(q,code)
 
 async def txt(u,c):
@@ -193,7 +187,7 @@ async def run(upd,sym):
     from telegram import CallbackQuery
     is_q=isinstance(upd,CallbackQuery)
     send=upd.message.reply_text
-    if not is_q: await upd.message.reply_text(f"🔎 {sym} fast fetching...")
+    if not is_q: await upd.message.reply_text(f"🔎 {sym} OKX fetching...")
     if sym=="XAUUSD" or sym=="PAXG":
         r=get_xau()
         if not r: await send("❌ XAUUSD retry 3 sec"); return
@@ -202,9 +196,9 @@ async def run(upd,sym):
         await send(f"🤖 XAUUSD MT5 1H REAL PIP ✅\n\n💰 {fmt(r['price'])} live\n📡 {r['src']}\n📊 EMA20 {fmt(r['e20'])} EMA50 {fmt(r['e50'])} RSI {r['rsi']:.1f}\n📌 {r['dir']} Score {r['score']}/10\n\n💵 Entry: {fmt(r['price'])} Lev 10x\n🛑 SL: {fmt(r['sl'])} ({p_sl:.0f} pips)\n🎯 TP1: {fmt(r['tp1'])} ({p1:.0f} pips)\n🎯 TP2: {fmt(r['tp2'])} ({p2:.0f} pips)\n🎯 TP3: {fmt(r['tp3'])} ({p3:.0f} pips)",reply_markup=mt5_kb())
         return
     r=analyze(sym)
-    if not r: await send(f"❌ {sym} busy - tap again, Render free tier wake up"); return
+    if not r: await send(f"❌ {sym} data - OKX timeout, tap again after 5 sec"); return
     if r["dir"]!="WAIT":
-        await send(f"🤖 {r['sym']} 1H REAL ✅\n💰 {fmt(r['price'])} live Vision/Gate\n📊 EMA20 {fmt(r['e20'])} EMA50 {fmt(r['e50'])} RSI {r['rsi']:.1f}\n📌 {r['dir']} Score {r['score']}\n\n💵 Entry: {fmt(r['price'])} Lev {r['lev']}x\n🛑 SL: {fmt(r['sl'])}\n🎯 TP1: {fmt(r['tp1'])}\n🎯 TP2: {fmt(r['tp2'])}\n🎯 TP3: {fmt(r['tp3'])}",reply_markup=coins_kb())
+        await send(f"🤖 {r['sym']} 1H REAL ✅\n💰 {fmt(r['price'])} live OKX\n📊 EMA20 {fmt(r['e20'])} EMA50 {fmt(r['e50'])} RSI {r['rsi']:.1f}\n📌 {r['dir']} Score {r['score']}\n\n💵 Entry: {fmt(r['price'])} Lev {r['lev']}x\n🛑 SL: {fmt(r['sl'])}\n🎯 TP1: {fmt(r['tp1'])}\n🎯 TP2: {fmt(r['tp2'])}\n🎯 TP3: {fmt(r['tp3'])}",reply_markup=coins_kb())
     else:
         await send(f"🤖 {r['sym']} 1H WAIT Score {r['score']} {fmt(r['price'])}",reply_markup=coins_kb())
 
