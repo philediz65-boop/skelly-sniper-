@@ -1,4 +1,8 @@
-import os,re,threading,requests,time,traceback
+import os,re,threading,requests,time,traceback,io
+import numpy as np
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 from flask import Flask
 from telegram import InlineKeyboardButton,InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder,CommandHandler,MessageHandler,CallbackQueryHandler,filters
@@ -9,7 +13,6 @@ app=Flask(__name__)
 SESSION=requests.Session()
 SESSION.headers.update({"User-Agent":"Mozilla/5.0"})
 CACHE={}
-
 CRYPTO={"BTC":"BTCUSDT","ETH":"ETHUSDT","BNB":"BNBUSDT","SOL":"SOLUSDT","XRP":"XRPUSDT","DOGE":"DOGEUSDT","ADA":"ADAUSDT","AVAX":"AVAXUSDT","LINK":"LINKUSDT","TRX":"TRXUSDT","DOT":"DOTUSDT","MATIC":"MATICUSDT","LTC":"LTCUSDT","BCH":"BCHUSDT","UNI":"UNIUSDT","ATOM":"ATOMUSDT","ETC":"ETCUSDT","FIL":"FILUSDT","PEPE":"PEPEUSDT","BONK":"BONKUSDT","SHIB":"SHIBUSDT","FLOKI":"FLOKIUSDT","WIF":"WIFUSDT","BOME":"BOMEUSDT","PAXG":"PAXGUSDT"}
 
 @app.get("/")
@@ -74,26 +77,20 @@ def detect_patterns_scored(kl):
     last=kl[-1]; prev=kl[-2]; prev2=kl[-3]
     pats=[]; score=0
     body=abs(last["c"]-last["o"]); rng=last["h"]-last["l"]
-    # Hammer bullish
     if rng>0 and (min(last["c"],last["o"])-last["l"]) > body*2 and body < rng*0.45:
         pats.append("HAMMER BULLISH 🟢"); score+=30
-    # Shooting star bearish
     if rng>0 and (last["h"]-max(last["c"],last["o"])) > body*2 and body < rng*0.45:
         pats.append("SHOOTING STAR BEARISH 🔴"); score-=30
-    # Engulfing
     if prev["c"]<prev["o"] and last["c"]>last["o"] and last["c"]>prev["o"] and last["o"]<prev["c"]:
         pats.append("BULLISH ENGULFING 🟢"); score+=40
     if prev["c"]>prev["o"] and last["c"]<last["o"] and last["c"]<prev["o"] and last["o"]>prev["c"]:
         pats.append("BEARISH ENGULFING 🔴"); score-=40
-    # Doji
     if rng>0 and body/rng < 0.1:
-        pats.append("DOJI - REVERSAL SOON ⚪"); score+= 0
-    # Morning/Evening Star
+        pats.append("DOJI - REVERSAL SOON ⚪")
     if prev2["c"]<prev2["o"] and last["c"]>last["o"] and last["c"]>prev2["o"]:
         pats.append("MORNING STAR BULLISH 🟢"); score+=35
     if prev2["c"]>prev2["o"] and last["c"]<last["o"] and last["c"]<prev2["o"]:
         pats.append("EVENING STAR BEARISH 🔴"); score-=35
-    # Last 2 candles momentum
     if last["c"]>prev["c"] and prev["c"]>prev2["c"]:
         pats.append("3 GREEN CANDLES - BULL MOMENTUM 🟢"); score+=15
     if last["c"]<prev["c"] and prev["c"]<prev2["c"]:
@@ -120,62 +117,84 @@ def analyze_balanced(code):
                 closes=[c["c"] for c in kl]; live=p
                 src=f"REAL GOLD LIVE ${p:.2f}"
         except: pass
-
     e20=ema(closes,20); e50=ema(closes,50); e200=ema(closes,200)
     rsi=rsi_calc(closes)
     sup=min([c["l"] for c in kl[-20:]]); res=max([c["h"] for c in kl[-20:]])
     atr=sum([c["h"]-c["l"] for c in kl[-14:]])/14 if kl else live*0.01
-
-    # 50% TREND SCORE (-100 to +100)
     if live>e20>e50>e200: t_score=80
     elif live>e20>e50: t_score=50
     elif live>e50: t_score=20
     elif live<e20<e50<e200: t_score=-80
     elif live<e20<e50: t_score=-50
     else: t_score=-20 if live<e50 else 20
-
-    # RSI adjust - overbought = bearish, oversold = bullish
     if rsi>75: t_score-=30
     elif rsi>68: t_score-=15
     elif rsi<25: t_score+=30
     elif rsi<32: t_score+=15
-
-    # Near resistance = more bearish chance, near support = bullish
     dist_res=(res-live)/live*100 if live!=0 else 0
     dist_sup=(live-sup)/live*100 if live!=0 else 0
     if dist_res<0.8: t_score-=20
     if dist_sup<0.8: t_score+=20
-
     t_score=max(-100,min(100,t_score))
-
-    # 50% CANDLE SCORE
     pats, c_score = detect_patterns_scored(kl)
-
-    # FINAL 50/50
     final = (t_score*0.5 + c_score*0.5)
-
-    # FORCE BUY/SELL - threshold small so both show
     if final>=5:
         direction="BUY"; entry=live; sl=sup-atr*0.3; risk=max(entry-sl,atr*0.5); tp1=entry+risk*2; tp2=entry+risk*3.5; tp3=entry+risk*6
     else:
         direction="SELL"; entry=live; sl=res+atr*0.3; risk=max(sl-entry,atr*0.5); tp1=entry-risk*2; tp2=entry-risk*3.5; tp3=entry-risk*6
-
     atr_pct=atr/live*100 if live!=0 else 1
     if atr_pct<0.5: lev="20x-25x (Low Vol)"
     elif atr_pct<1.2: lev="10x-15x (Normal)"
     else: lev="5x-7x (High Vol)"
-
     conf = 60 + abs(final)*0.35
     conf = min(92, max(62, conf))
-
     trend_txt = "STRONG UPTREND 🚀" if t_score>60 else "UPTREND 📈" if t_score>15 else "STRONG DOWNTREND 📉" if t_score<-60 else "DOWNTREND 📉" if t_score<-15 else "SIDEWAYS ↔️"
+    return {"error":False,"code":code,"price":live,"src":src,"trend":trend_txt,"e20":e20,"e50":e50,"e200":e200,"rsi":rsi,"sup":sup,"res":res,"atr":atr,"t_score":t_score,"c_score":c_score,"final":final,"pats":pats,"dir":direction,"entry":entry,"sl":sl,"tp1":tp1,"tp2":tp2,"tp3":tp3,"lev":lev,"conf":conf,"kl":kl}
 
-    return {
-        "error":False,"code":code,"price":live,"src":src,"trend":trend_txt,
-        "e20":e20,"e50":e50,"e200":e200,"rsi":rsi,"sup":sup,"res":res,"atr":atr,
-        "t_score":t_score,"c_score":c_score,"final":final,"pats":pats,
-        "dir":direction,"entry":entry,"sl":sl,"tp1":tp1,"tp2":tp2,"tp3":tp3,"lev":lev,"conf":conf
-    }
+# === NEW: ONLY 2 NEW FUNCTIONS ADDED ===
+def generate_chart_image(symbol, direction, entry, sl, tp1, tp3, kl):
+    try:
+        closes=[c["c"] for c in kl[-80:]]
+        fig, ax=plt.subplots(figsize=(10,5.2), facecolor='white')
+        ax.plot(closes, color='black', linewidth=1)
+        ax.axhline(entry, color='#2962FF', linewidth=1.8)
+        ax.axhline(sl, color='black', linewidth=1.2)
+        ax.axhline(tp3, color='black', linewidth=1.2)
+        last_x=len(closes)-1
+        ax.text(last_x+0.5, entry, ' ENTRY ', backgroundcolor='#2962FF', color='white', weight='bold', fontsize=9, va='center')
+        ax.text(last_x+0.5, sl, ' SL ', backgroundcolor='black', color='white', fontsize=8, va='center')
+        ax.text(last_x+0.5, tp3, ' TP3 ', backgroundcolor='black', color='white', fontsize=8, va='center')
+        ax.fill_between([last_x-15, last_x+1], entry*0.999, entry*1.001, color='#2962FF', alpha=0.18)
+        x_arrow=last_x-7
+        ax.annotate('', xy=(x_arrow+1, tp3), xytext=(x_arrow, entry), arrowprops=dict(facecolor='black', edgecolor='black', width=2.5, headwidth=10, headlength=8))
+        pair=f"{symbol}USDT" if symbol!="XAUUSD" else "XAUUSD"
+        lev_text="15x Safe" if symbol!="XAUUSD" else "20x Safe"
+        ax.set_title(f"{pair} SMC | {direction} | Lev {lev_text} | {pair} • 1H", loc='left', fontsize=10, fontweight='bold')
+        ax.grid(True, alpha=0.12)
+        plt.tight_layout()
+        buf=io.BytesIO()
+        plt.savefig(buf, format='png', dpi=160)
+        buf.seek(0); plt.close(fig); return buf
+    except Exception as e:
+        print("chart error",e); return None
+
+def get_risk_calculator_text(entry, sl, tp1, tp2, tp3, lev_str, direction):
+    try:
+        lev_num=20 if "20" in lev_str else 15 if "15" in lev_str else 10 if "10" in lev_str else 7
+        if direction=="BUY":
+            sl_pct=(sl-entry)/entry*100*lev_num
+            tp1_pct=(tp1-entry)/entry*100*lev_num
+            tp2_pct=(tp2-entry)/entry*100*lev_num
+            tp3_pct=(tp3-entry)/entry*100*lev_num
+        else:
+            sl_pct=(sl-entry)/entry*100*lev_num
+            tp1_pct=(entry-tp1)/entry*100*lev_num
+            tp2_pct=(entry-tp2)/entry*100*lev_num
+            tp3_pct=(entry-tp3)/entry*100*lev_num
+        def m(pct,bal): return bal*pct/100
+        return f"\n💵 RISK CALCULATOR (Lev {lev_num}x):\n⛔ SL {sl_pct:.2f}%: $10→${m(sl_pct,10):.2f} | $100→${m(sl_pct,100):.2f} | $1000→${m(sl_pct,1000):.2f}\n🎯 TP1 +{abs(tp1_pct):.2f}%: $100→+${abs(m(tp1_pct,100)):.2f} | $1000→+${abs(m(tp1_pct,1000)):.2f}\n🎯 TP2 +{abs(tp2_pct):.2f}%: $100→+${abs(m(tp2_pct,100)):.2f}\n🚀 TP3 +{abs(tp3_pct):.2f}%: $100→+${abs(m(tp3_pct,100)):.2f} | $1000→+${abs(m(tp3_pct,1000)):.2f}\n⚠️ Use 1-2% risk!"
+    except:
+        return ""
 
 def coins_kb():
     ks=list(CRYPTO.keys()); btns=[]; row=[]
@@ -186,14 +205,14 @@ def coins_kb():
     btns.append([InlineKeyboardButton("🥇 XAUUSD GOLD LIVE",callback_data="C_XAUUSD")])
     return InlineKeyboardMarkup(btns)
 
-async def start(u,c): await u.message.reply_text("✅ 50/50 BALANCED - BUY & SELL BOTH WILL SHOW ✅\n\nTrend 50% + Candle 50% = Real BUY/SELL\n\nTap:",reply_markup=coins_kb())
+async def start(u,c): await u.message.reply_text("✅ 50/50 BALANCED - BUY & SELL BOTH WILL SHOW ✅\n\nTrend 50% + Candle 50% = Real BUY/SELL\n📸 Chart + Risk Calculator Added ✅\n\nTap:",reply_markup=coins_kb())
 
 async def btn_handler(u,c):
     q=u.callback_query; await q.answer(); d=q.data
     if d.startswith("C_"):
         code=d[2:]
         await q.edit_message_text(f"📊 1H Balanced 50/50 Analysis for {code}...")
-        try: await run(q,code)
+        try: await run(q,code,c)
         except Exception as e:
             print(traceback.format_exc())
             await q.edit_message_text(f"❌ {code} {e}",reply_markup=coins_kb())
@@ -202,16 +221,16 @@ async def txt_handler(u,c):
     s=clean((u.message.text or "").strip())
     if s in CRYPTO or s=="XAUUSD":
         await u.message.reply_text(f"📊 1H Balanced 50/50 Analysis for {s}...")
-        await run(u,s)
+        await run(u,s,c)
 
-async def run(upd, code):
+async def run(upd, code, context):
     try:
         r=analyze_balanced(code)
         if r.get("error"):
             await upd.message.reply_text(f"⚠️ {r['msg']}",reply_markup=coins_kb())
             return
         pats_txt="\n".join([f"• {p}" for p in r["pats"]])
-        # Perfect view with 50/50
+        risk_txt=get_risk_calculator_text(r["entry"], r["sl"], r["tp1"], r["tp2"], r["tp3"], r["lev"], r["dir"])
         msg=f"""{"🟢" if r['dir']=="BUY" else "🔴"} {r['code']} {r['dir']} SIGNAL - 1H TIMEFRAME
 
 💰 Price: {fmt(r['price'])} | {r['src']}
@@ -237,8 +256,13 @@ Leverage: {r['lev']}
 🎯 TP1: {fmt(r['tp1'])} (2R)
 🎯 TP2: {fmt(r['tp2'])} (3.5R)
 🎯 TP3: {fmt(r['tp3'])} (6R)
+{risk_txt}
 """
-        await upd.message.reply_text(msg,reply_markup=coins_kb())
+        chart_buf=generate_chart_image(r['code'], r['dir'], r['entry'], r['sl'], r['tp1'], r['tp3'], r['kl'])
+        if chart_buf:
+            await context.bot.send_photo(chat_id=upd.message.chat.id, photo=chart_buf, caption=msg, reply_markup=coins_kb())
+        else:
+            await upd.message.reply_text(msg,reply_markup=coins_kb())
     except Exception as e:
         print(traceback.format_exc())
         await upd.message.reply_text(f"❌ {code} {e}",reply_markup=coins_kb())
