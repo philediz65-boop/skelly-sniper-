@@ -16,7 +16,7 @@ CACHE={}
 CRYPTO={"BTC":"BTCUSDT","ETH":"ETHUSDT","BNB":"BNBUSDT","SOL":"SOLUSDT","XRP":"XRPUSDT","DOGE":"DOGEUSDT","ADA":"ADAUSDT","AVAX":"AVAXUSDT","LINK":"LINKUSDT","TRX":"TRXUSDT","DOT":"DOTUSDT","MATIC":"MATICUSDT","LTC":"LTCUSDT","BCH":"BCHUSDT","UNI":"UNIUSDT","ATOM":"ATOMUSDT","ETC":"ETCUSDT","FIL":"FILUSDT","PEPE":"PEPEUSDT","BONK":"BONKUSDT","SHIB":"SHIBUSDT","FLOKI":"FLOKIUSDT","WIF":"WIFUSDT","BOME":"BOMEUSDT","PAXG":"PAXGUSDT"}
 
 @app.get("/")
-def home(): return "SKELLY 50/50 BALANCED BUY/SELL OK",200
+def home(): return "SKELLY 50/50 + PHOTO + RISK OK",200
 @app.get("/health")
 def health(): return {"ok":True},200
 
@@ -151,7 +151,6 @@ def analyze_balanced(code):
     trend_txt = "STRONG UPTREND 🚀" if t_score>60 else "UPTREND 📈" if t_score>15 else "STRONG DOWNTREND 📉" if t_score<-60 else "DOWNTREND 📉" if t_score<-15 else "SIDEWAYS ↔️"
     return {"error":False,"code":code,"price":live,"src":src,"trend":trend_txt,"e20":e20,"e50":e50,"e200":e200,"rsi":rsi,"sup":sup,"res":res,"atr":atr,"t_score":t_score,"c_score":c_score,"final":final,"pats":pats,"dir":direction,"entry":entry,"sl":sl,"tp1":tp1,"tp2":tp2,"tp3":tp3,"lev":lev,"conf":conf,"kl":kl}
 
-# === NEW: ONLY 2 NEW FUNCTIONS ADDED ===
 def generate_chart_image(symbol, direction, entry, sl, tp1, tp3, kl):
     try:
         closes=[c["c"] for c in kl[-80:]]
@@ -169,14 +168,18 @@ def generate_chart_image(symbol, direction, entry, sl, tp1, tp3, kl):
         ax.annotate('', xy=(x_arrow+1, tp3), xytext=(x_arrow, entry), arrowprops=dict(facecolor='black', edgecolor='black', width=2.5, headwidth=10, headlength=8))
         pair=f"{symbol}USDT" if symbol!="XAUUSD" else "XAUUSD"
         lev_text="15x Safe" if symbol!="XAUUSD" else "20x Safe"
-        ax.set_title(f"{pair} SMC | {direction} | Lev {lev_text} | {pair} • 1H", loc='left', fontsize=10, fontweight='bold')
+        ax.set_title(f"{pair} SMC | {direction} | Lev {lev_text} | {pair} - 1H", loc='left', fontsize=10, fontweight='bold')
         ax.grid(True, alpha=0.12)
         plt.tight_layout()
         buf=io.BytesIO()
-        plt.savefig(buf, format='png', dpi=160)
-        buf.seek(0); plt.close(fig); return buf
+        plt.savefig(buf, format='png', dpi=150)
+        buf.seek(0)
+        plt.close(fig)
+        buf.name=f"{symbol}.png"
+        return buf
     except Exception as e:
-        print("chart error",e); return None
+        print(f"chart error {e}")
+        return None
 
 def get_risk_calculator_text(entry, sl, tp1, tp2, tp3, lev_str, direction):
     try:
@@ -192,7 +195,16 @@ def get_risk_calculator_text(entry, sl, tp1, tp2, tp3, lev_str, direction):
             tp2_pct=(entry-tp2)/entry*100*lev_num
             tp3_pct=(entry-tp3)/entry*100*lev_num
         def m(pct,bal): return bal*pct/100
-        return f"\n💵 RISK CALCULATOR (Lev {lev_num}x):\n⛔ SL {sl_pct:.2f}%: $10→${m(sl_pct,10):.2f} | $100→${m(sl_pct,100):.2f} | $1000→${m(sl_pct,1000):.2f}\n🎯 TP1 +{abs(tp1_pct):.2f}%: $100→+${abs(m(tp1_pct,100)):.2f} | $1000→+${abs(m(tp1_pct,1000)):.2f}\n🎯 TP2 +{abs(tp2_pct):.2f}%: $100→+${abs(m(tp2_pct,100)):.2f}\n🚀 TP3 +{abs(tp3_pct):.2f}%: $100→+${abs(m(tp3_pct,100)):.2f} | $1000→+${abs(m(tp3_pct,1000)):.2f}\n⚠️ Use 1-2% risk!"
+        return f"""
+
+💵 RISK CALCULATOR (Lev {lev_num}x):
+⛔ SL {sl_pct:.2f}%:
+ $10 -> ${m(sl_pct,10):.2f} | $100 -> ${m(sl_pct,100):.2f} | $1000 -> ${m(sl_pct,1000):.2f}
+🎯 TP1 +{abs(tp1_pct):.2f}%: $100 -> +${abs(m(tp1_pct,100)):.2f} | $1000 -> +${abs(m(tp1_pct,1000)):.2f}
+🎯 TP2 +{abs(tp2_pct):.2f}%: $100 -> +${abs(m(tp2_pct,100)):.2f}
+🚀 TP3 +{abs(tp3_pct):.2f}% MOON: $100 -> +${abs(m(tp3_pct,100)):.2f} | $1000 -> +${abs(m(tp3_pct,1000)):.2f}
+⚠️ Use 1-2% risk per trade!
+"""
     except:
         return ""
 
@@ -205,17 +217,23 @@ def coins_kb():
     btns.append([InlineKeyboardButton("🥇 XAUUSD GOLD LIVE",callback_data="C_XAUUSD")])
     return InlineKeyboardMarkup(btns)
 
-async def start(u,c): await u.message.reply_text("✅ 50/50 BALANCED - BUY & SELL BOTH WILL SHOW ✅\n\nTrend 50% + Candle 50% = Real BUY/SELL\n📸 Chart + Risk Calculator Added ✅\n\nTap:",reply_markup=coins_kb())
+async def start(u,c):
+    await u.message.reply_text("✅ 50/50 BALANCED - BUY & SELL BOTH WILL SHOW ✅\n\nTrend 50% + Candle 50% = Real BUY/SELL\n📸 Chart + Risk Calculator Added ✅\n\nTap:",reply_markup=coins_kb())
 
 async def btn_handler(u,c):
-    q=u.callback_query; await q.answer(); d=q.data
+    q=u.callback_query
+    await q.answer()
+    d=q.data
     if d.startswith("C_"):
         code=d[2:]
         await q.edit_message_text(f"📊 1H Balanced 50/50 Analysis for {code}...")
-        try: await run(q,code,c)
+        try:
+            await run(q,code,c)
         except Exception as e:
             print(traceback.format_exc())
-            await q.edit_message_text(f"❌ {code} {e}",reply_markup=coins_kb())
+            try:
+                await q.edit_message_text(f"❌ {code} {e}",reply_markup=coins_kb())
+            except: pass
 
 async def txt_handler(u,c):
     s=clean((u.message.text or "").strip())
@@ -258,23 +276,35 @@ Leverage: {r['lev']}
 🎯 TP3: {fmt(r['tp3'])} (6R)
 {risk_txt}
 """
-        chart_buf=generate_chart_image(r['code'], r['dir'], r['entry'], r['sl'], r['tp1'], r['tp3'], r['kl'])
-        if chart_buf:
-            await context.bot.send_photo(chat_id=upd.message.chat.id, photo=chart_buf, caption=msg, reply_markup=coins_kb())
-        else:
-            await upd.message.reply_text(msg,reply_markup=coins_kb())
+        try:
+            chart_buf=generate_chart_image(r['code'], r['dir'], r['entry'], r['sl'], r['tp1'], r['tp3'], r['kl'])
+            if chart_buf:
+                await context.bot.send_photo(chat_id=upd.message.chat.id, photo=chart_buf, caption=msg, reply_markup=coins_kb())
+                return
+        except Exception as e:
+            print(f"Chart send failed {e}")
+
+        await upd.message.reply_text(msg,reply_markup=coins_kb())
+
     except Exception as e:
         print(traceback.format_exc())
-        await upd.message.reply_text(f"❌ {code} {e}",reply_markup=coins_kb())
+        try:
+            await upd.message.reply_text(f"❌ {code} {e}",reply_markup=coins_kb())
+        except: pass
 
-def run_flask(): app.run(host="0.0.0.0",port=PORT)
+def run_flask():
+    app.run(host="0.0.0.0",port=PORT)
+
 def run_bot():
-    if not BOT_TOKEN: return
+    if not BOT_TOKEN:
+        print("No BOT_TOKEN")
+        return
     a=ApplicationBuilder().token(BOT_TOKEN).build()
     a.add_handler(CommandHandler("start",start))
     a.add_handler(CommandHandler("coins",start))
     a.add_handler(CallbackQueryHandler(btn_handler))
     a.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,txt_handler))
+    print("Bot starting...")
     a.run_polling(drop_pending_updates=True)
 
 if __name__=="__main__":
