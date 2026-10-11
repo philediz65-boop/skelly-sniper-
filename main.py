@@ -13,7 +13,7 @@ CACHE={}
 CRYPTO={"BTC":"BTCUSDT","ETH":"ETHUSDT","BNB":"BNBUSDT","SOL":"SOLUSDT","XRP":"XRPUSDT","DOGE":"DOGEUSDT","ADA":"ADAUSDT","AVAX":"AVAXUSDT","LINK":"LINKUSDT","TRX":"TRXUSDT","DOT":"DOTUSDT","MATIC":"MATICUSDT","LTC":"LTCUSDT","BCH":"BCHUSDT","UNI":"UNIUSDT","ATOM":"ATOMUSDT","ETC":"ETCUSDT","FIL":"FILUSDT","PEPE":"PEPEUSDT","BONK":"BONKUSDT","SHIB":"SHIBUSDT","FLOKI":"FLOKIUSDT","WIF":"WIFUSDT","BOME":"BOMEUSDT","PAXG":"PAXGUSDT"}
 
 @app.get("/")
-def home(): return "SKELLY PERFECT VIEW BUY/SELL OK",200
+def home(): return "SKELLY 50/50 BALANCED BUY/SELL OK",200
 @app.get("/health")
 def health(): return {"ok":True},200
 
@@ -24,7 +24,6 @@ def clean(t):
     if t in m: t=m[t]
     if t.endswith("USDT") and t[:-4] in CRYPTO: return t[:-4]
     return t
-
 def fmt(v):
     try:
         if v is None: return "0"
@@ -38,13 +37,13 @@ def get_klines(sym):
     try:
         r=SESSION.get("https://www.okx.com/api/v5/market/candles",params={"instId":sym.replace("USDT","-USDT"),"bar":"1H","limit":"100"},timeout=12).json()
         data=r.get("data",[])
-        if len(data)>=50:
+        if len(data)>=60:
             kl=[{"o":float(x[1]),"h":float(x[2]),"l":float(x[3]),"c":float(x[4]),"v":float(x[5])} for x in data][::-1]
     except: pass
     if not kl:
         try:
             r=SESSION.get("https://data-api.binance.vision/api/v3/klines",params={"symbol":sym,"interval":"1h","limit":100},timeout=12).json()
-            if isinstance(r,list) and len(r)>=50:
+            if isinstance(r,list) and len(r)>=60:
                 kl=[{"o":float(x[1]),"h":float(x[2]),"l":float(x[3]),"c":float(x[4]),"v":float(x[5])} for x in r]
         except: pass
     if kl:
@@ -59,7 +58,6 @@ def ema(arr,p):
     k=2/(p+1); e=sum(arr[:p])/p
     for x in arr[p:]: e=(x-e)*k+e
     return e
-
 def rsi_calc(arr,p=14):
     if len(arr)<p+1: return 50
     gains=losses=0
@@ -67,180 +65,26 @@ def rsi_calc(arr,p=14):
         d=arr[-i]-arr[-i-1]
         if d>0: gains+=d
         else: losses+=-d
-    if losses==0: return 70
+    if losses==0: return 75 if gains>0 else 50
     rs=gains/losses if losses!=0 else 1
     return 100 - (100/(1+rs))
 
-def is_hammer(c):
-    body=abs(c["c"]-c["o"]); rng=c["h"]-c["l"]
-    if rng==0: return False
-    lower=min(c["c"],c["o"])-c["l"]
-    return lower > body*2 and body < rng*0.4
-def is_shooting_star(c):
-    body=abs(c["c"]-c["o"]); rng=c["h"]-c["l"]
-    if rng==0: return False
-    upper=c["h"]-max(c["c"],c["o"])
-    return upper > body*2 and body < rng*0.4
-def is_bull_engulf(prev,curr):
-    return prev["c"]<prev["o"] and curr["c"]>curr["o"] and curr["c"]>prev["o"] and curr["o"]<prev["c"]
-def is_bear_engulf(prev,curr):
-    return prev["c"]>prev["o"] and curr["c"]<curr["o"] and curr["c"]<prev["o"] and curr["o"]>prev["c"]
-def is_doji(c):
-    body=abs(c["c"]-c["o"]); rng=c["h"]-c["l"]
-    return rng>0 and body/rng < 0.1
-
-def detect_patterns(kl):
-    if len(kl)<3: return []
+def detect_patterns_scored(kl):
+    if len(kl)<3: return [],0
     last=kl[-1]; prev=kl[-2]; prev2=kl[-3]
-    pats=[]
-    try:
-        if is_hammer(last): pats.append("HAMMER BULLISH 🟢")
-        if is_shooting_star(last): pats.append("SHOOTING STAR BEARISH 🔴")
-        if is_bull_engulf(prev,last): pats.append("BULLISH ENGULFING 🟢")
-        if is_bear_engulf(prev,last): pats.append("BEARISH ENGULFING 🔴")
-        if is_doji(last): pats.append("DOJI - REVERSAL SOON ⚪")
-        if prev2["c"]<prev2["o"] and last["c"]>last["o"] and last["c"]>prev2["o"]: pats.append("MORNING STAR BULLISH 🟢")
-        if prev2["c"]>prev2["o"] and last["c"]<last["o"] and last["c"]<prev2["o"]: pats.append("EVENING STAR BEARISH 🔴")
-        if not pats:
-            if last["c"]>last["o"]: pats.append("BULLISH CANDLE 🟢")
-            else: pats.append("BEARISH CANDLE 🔴")
-    except: pass
-    return pats
-
-def analyze_perfect(code):
-    sym=CRYPTO.get(code,"BTCUSDT") if code!="XAUUSD" else "PAXGUSDT"
-    kl=get_klines(sym)
-    if len(kl)<30:
-        return {"error":True,"msg":f"No data {code}"}
-    closes=[c["c"] for c in kl]
-    live=closes[-1]
-    src="1H BINANCE/OKX LIVE"
-    if code=="XAUUSD":
-        try:
-            r=SESSION.get("https://api.gold-api.com/price/XAU",timeout=4).json()
-            p=float(r.get("price",0))
-            if 3000<p<6000:
-                diff=p-live
-                for c in kl: c["o"]+=diff; c["h"]+=diff; c["l"]+=diff; c["c"]+=diff
-                closes=[c["c"] for c in kl]; live=p
-                src=f"REAL GOLD LIVE ${p:.2f}"
-        except: pass
-
-    e20=ema(closes,20); e50=ema(closes,50); e200=ema(closes,200)
-    rsi=rsi_calc(closes)
-    sup=min([c["l"] for c in kl[-20:]]); res=max([c["h"] for c in kl[-20:]])
-    atr=sum([c["h"]-c["l"] for c in kl[-14:]])/14 if kl else live*0.01
-    vols=[c["v"] for c in kl[-20:]]; avg=sum(vols)/len(vols) if vols else 1
-    vol_ok=kl[-1]["v"]>avg
-
-    # 50/50 learning
-    # Trend
-    if live>e20>e50>e200: trend="STRONG UPTREND 🚀"; tscore=85
-    elif live>e20>e50: trend="UPTREND 📈"; tscore=65
-    elif live<e20<e50<e200: trend="STRONG DOWNTREND 📉"; tscore=-85
-    elif live<e20<e50: trend="DOWNTREND 📉"; tscore=-65
-    else: trend="SIDEWAYS / CONSOLIDATION ↔️"; tscore=10 if live>e50 else -10
-
-    pats=detect_patterns(kl)
-    # Force BUY/SELL - no WAIT
-    if tscore>=0:
-        direction="BUY"; entry=live; sl=sup-atr*0.3; risk=max(entry-sl, atr*0.5); tp1=entry+risk*2; tp2=entry+risk*3.5; tp3=entry+risk*6
-    else:
-        direction="SELL"; entry=live; sl=res+atr*0.3; risk=max(sl-entry, atr*0.5); tp1=entry-risk*2; tp2=entry-risk*3.5; tp3=entry-risk*6
-
-    # Leverage based on ATR volatility + RSI
-    atr_pct=atr/live*100
-    if atr_pct<0.5: lev="20x-25x (Low Volatility)"
-    elif atr_pct<1.2: lev="10x-15x (Normal)"
-    else: lev="5x-7x (High Volatility - Use Low Lev)"
-
-    conf = 70 + (abs(tscore)/100*20) + (10 if vol_ok else 0)
-    conf = min(95, max(60, conf))
-
-    return {
-        "error":False,"code":code,"price":live,"src":src,"trend":trend,"e20":e20,"e50":e50,"e200":e200,"rsi":rsi,
-        "sup":sup,"res":res,"atr":atr,"vol_ok":vol_ok,"pats":pats,
-        "dir":direction,"entry":entry,"sl":sl,"tp1":tp1,"tp2":tp2,"tp3":tp3,"lev":lev,"conf":conf,"tscore":tscore
-    }
-
-def coins_kb():
-    ks=list(CRYPTO.keys()); btns=[]; row=[]
-    for c in ks:
-        row.append(InlineKeyboardButton(c,callback_data=f"C_{c}"))
-        if len(row)==3: btns.append(row); row=[]
-    if row: btns.append(row)
-    btns.append([InlineKeyboardButton("🥇 XAUUSD GOLD LIVE",callback_data="C_XAUUSD")])
-    return InlineKeyboardMarkup(btns)
-
-async def start(u,c): await u.message.reply_text("✅ SKELLY PERFECT VIEW - ALWAYS BUY/SELL ✅\n\n1H Analysis + Candle Learning + Entry TP SL Lev\n\nTap coin:",reply_markup=coins_kb())
-
-async def btn_handler(u,c):
-    q=u.callback_query; await q.answer(); d=q.data
-    if d.startswith("C_"):
-        code=d[2:]
-        await q.edit_message_text(f"📊 1H Perfect Analysis for {code}...")
-        try: await run(q,code)
-        except Exception as e:
-            print(traceback.format_exc())
-            await q.edit_message_text(f"❌ {code} {e}",reply_markup=coins_kb())
-
-async def txt_handler(u,c):
-    s=clean((u.message.text or "").strip())
-    if s in CRYPTO or s=="XAUUSD":
-        await u.message.reply_text(f"📊 1H Perfect Analysis for {s}...")
-        await run(u,s)
-
-async def run(upd, code):
-    try:
-        r=analyze_perfect(code)
-        if r.get("error"):
-            await upd.message.reply_text(f"⚠️ {r['msg']}",reply_markup=coins_kb())
-            return
-        pats_txt="\n".join([f"• {p}" for p in r["pats"]])
-        vol_txt="High Volume ✅" if r["vol_ok"] else "Low Volume ⚠️"
-        # PERFECT VIEW CARD
-        msg=f"""🚀 {r['code']} {r['dir']} SIGNAL - 1H TIMEFRAME
-
-💰 Price: {fmt(r['price'])} | {r['src']}
-⏰ TF: 1 HOUR | Confidence: {r['conf']:.0f}%
-
-📊 1H ANALYSIS:
-Trend: {r['trend']}
-EMA20 {fmt(r['e20'])} | EMA50 {fmt(r['e50'])} | EMA200 {fmt(r['e200'])}
-RSI {r['rsi']:.0f} | ATR {fmt(r['atr'])} | {vol_txt}
-Support {fmt(r['sup'])} | Resistance {fmt(r['res'])}
-
-🕯️ CANDLE LEARNING (50 candles):
-{pats_txt}
-Learned Score: {r['tscore']:.0f}
-
-💵 PERFECT ENTRY PLAN:
-Direction: {r['dir']}
-Entry: {fmt(r['entry'])}
-Leverage: {r['lev']}
-
-🛑 SL: {fmt(r['sl'])}
-🎯 TP1: {fmt(r['tp1'])} (2R - 40% close)
-🎯 TP2: {fmt(r['tp2'])} (3.5R - 30% close)
-🎯 TP3: {fmt(r['tp3'])} (6R - Runner)
-
-⚡ Strategy: Enter at {fmt(r['entry'])}, SL below support/resistance + ATR. Take partials at TP1/TP2.
-"""
-        await upd.message.reply_text(msg,reply_markup=coins_kb())
-    except Exception as e:
-        print(traceback.format_exc())
-        await upd.message.reply_text(f"❌ {code} {e}",reply_markup=coins_kb())
-
-def run_flask(): app.run(host="0.0.0.0",port=PORT)
-def run_bot():
-    if not BOT_TOKEN: return
-    a=ApplicationBuilder().token(BOT_TOKEN).build()
-    a.add_handler(CommandHandler("start",start))
-    a.add_handler(CommandHandler("coins",start))
-    a.add_handler(CallbackQueryHandler(btn_handler))
-    a.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,txt_handler))
-    a.run_polling(drop_pending_updates=True)
-
-if __name__=="__main__":
-    threading.Thread(target=run_flask,daemon=True).start()
-    run_bot()
+    pats=[]; score=0
+    body=abs(last["c"]-last["o"]); rng=last["h"]-last["l"]
+    # Hammer bullish
+    if rng>0 and (min(last["c"],last["o"])-last["l"]) > body*2 and body < rng*0.45:
+        pats.append("HAMMER BULLISH 🟢"); score+=30
+    # Shooting star bearish
+    if rng>0 and (last["h"]-max(last["c"],last["o"])) > body*2 and body < rng*0.45:
+        pats.append("SHOOTING STAR BEARISH 🔴"); score-=30
+    # Engulfing
+    if prev["c"]<prev["o"] and last["c"]>last["o"] and last["c"]>prev["o"] and last["o"]<prev["c"]:
+        pats.append("BULLISH ENGULFING 🟢"); score+=40
+    if prev["c"]>prev["o"] and last["c"]<last["o"] and last["c"]<prev["o"] and last["o"]>prev["c"]:
+        pats.append("BEARISH ENGULFING 🔴"); score-=40
+    # Doji
+    if rng>0 and body/rng < 0.1:
+        pats.append("DOJI - REVERSAL SO
