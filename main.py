@@ -19,7 +19,7 @@ LAST_CLICK={}
 CRYPTO={"BTC":"BTCUSDT","ETH":"ETHUSDT","BNB":"BNBUSDT","SOL":"SOLUSDT","XRP":"XRPUSDT","DOGE":"DOGEUSDT","ADA":"ADAUSDT","AVAX":"AVAXUSDT","LINK":"LINKUSDT","TRX":"TRXUSDT","DOT":"DOTUSDT","MATIC":"MATICUSDT","LTC":"LTCUSDT","BCH":"BCHUSDT","UNI":"UNIUSDT","ATOM":"ATOMUSDT","ETC":"ETCUSDT","FIL":"FILUSDT","PEPE":"PEPEUSDT","BONK":"BONKUSDT","SHIB":"SHIBUSDT","FLOKI":"FLOKIUSDT","WIF":"WIFUSDT","BOME":"BOMEUSDT","PAXG":"PAXGUSDT"}
 
 @app.get("/")
-def home(): return "SKELLY 4H PRO CHART OK",200
+def home(): return "SKELLY 4H PRO CHART + SUP/RES + CONF OK",200
 @app.get("/health")
 def health(): return {"ok":True},200
 
@@ -67,7 +67,6 @@ def ema(arr,p):
     return e
 
 def ema_series(arr, p):
-    # for chart EMA lines
     res=[]
     if len(arr)<p: return [sum(arr)/len(arr)]*len(arr) if arr else []
     k=2/(p+1)
@@ -76,7 +75,6 @@ def ema_series(arr, p):
     for x in arr[p:]:
         e=(x-e)*k+e
         res.append(e)
-    # pad to same len
     while len(res)<len(arr): res.insert(0,res[0])
     return res[-len(arr):]
 
@@ -170,69 +168,56 @@ def analyze_balanced(code):
     trend_txt = "STRONG UPTREND 🚀" if t_score>60 else "UPTREND 📈" if t_score>15 else "STRONG DOWNTREND 📉" if t_score<-60 else "DOWNTREND 📉" if t_score<-15 else "SIDEWAYS ↔️"
     return {"error":False,"code":code,"price":live,"src":src,"trend":trend_txt,"e20":e20,"e50":e50,"e200":e200,"rsi":rsi,"sup":sup,"res":res,"atr":atr,"t_score":t_score,"c_score":c_score,"final":final,"pats":pats,"dir":direction,"entry":entry,"sl":sl,"tp1":tp1,"tp2":tp2,"tp3":tp3,"lev":lev,"conf":conf,"kl":kl}
 
-# === NEW PRO CHART WITH CANDLES + EMA + TP/SL ===
-def generate_chart_image(symbol, direction, entry, sl, tp1, tp2, tp3, kl):
+def generate_chart_image(symbol, direction, entry, sl, tp1, tp2, tp3, kl, sup, res, conf, trend_txt):
     try:
         data = kl[-80:]
         closes = [c["c"] for c in kl]
         e20_s = ema_series(closes,20)[-80:]
         e50_s = ema_series(closes,50)[-80:]
         e200_s = ema_series(closes,200)[-80:]
-
-        fig, ax = plt.subplots(figsize=(12,6), facecolor='white')
-
-        # Candles
+        fig, ax = plt.subplots(figsize=(12,6.5), facecolor='white')
         for i, c in enumerate(data):
             color = '#26A69A' if c["c"] >= c["o"] else '#EF5350'
-            # wick
             ax.plot([i, i], [c["l"], c["h"]], color=color, linewidth=0.8)
-            # body
             body_h = abs(c["c"]-c["o"])
             body_y = min(c["o"], c["c"])
-            # ensure visible body
-            if body_h < (max([x["h"]-x["l"] for x in data]) * 0.01):
-                body_h = max([x["h"]-x["l"] for x in data]) * 0.01
+            if body_h < (max([x["h"]-x["l"] for x in data]) * 0.008):
+                body_h = max([x["h"]-x["l"] for x in data]) * 0.008
             rect = Rectangle((i-0.35, body_y), 0.7, body_h if body_h>0 else 0.001, facecolor=color, edgecolor=color)
             ax.add_patch(rect)
-
-        # EMAs
-        ax.plot(e20_s, color='#FFC107', linewidth=1.1, label='EMA20', alpha=0.9)
-        ax.plot(e50_s, color='#2962FF', linewidth=1.1, label='EMA50', alpha=0.9)
-        ax.plot(e200_s, color='#9C27B0', linewidth=1.1, label='EMA200', alpha=0.9)
-
+        ax.plot(e20_s, color='#FFC107', linewidth=1.1, label='EMA20')
+        ax.plot(e50_s, color='#2962FF', linewidth=1.1, label='EMA50')
+        ax.plot(e200_s, color='#9C27B0', linewidth=1.1, label='EMA200')
         last_x = len(data)-1
-
-        # ENTRY SL TP lines
-        ax.axhline(entry, color='#2962FF', linewidth=1.8, linestyle='-', alpha=0.9)
+        ax.axhspan(sup*0.998, sup*1.002, color='green', alpha=0.08)
+        ax.axhspan(res*0.998, res*1.002, color='red', alpha=0.08)
+        ax.axhline(sup, color='#26A69A', linewidth=0.9, linestyle=':', alpha=0.7)
+        ax.axhline(res, color='#EF5350', linewidth=0.9, linestyle=':', alpha=0.7)
+        ax.axhline(entry, color='#2962FF', linewidth=1.8)
         ax.axhline(sl, color='#D32F2F', linewidth=1.4, linestyle='--')
         ax.axhline(tp1, color='#2E7D32', linewidth=1.2, linestyle='--')
         ax.axhline(tp2, color='#2E7D32', linewidth=1.2, linestyle='-.')
-        ax.axhline(tp3, color='#1B5E20', linewidth=1.4, linestyle='-')
-
-        # Labels on right
+        ax.axhline(tp3, color='#1B5E20', linewidth=1.5)
         ax.text(last_x+0.8, entry, f' ENTRY {entry:.4f} ', backgroundcolor='#2962FF', color='white', weight='bold', fontsize=8, va='center')
         ax.text(last_x+0.8, sl, f' SL {sl:.4f} ', backgroundcolor='#D32F2F', color='white', fontsize=7, va='center')
         ax.text(last_x+0.8, tp1, f' TP1 {tp1:.4f} ', backgroundcolor='#2E7D32', color='white', fontsize=7, va='center')
         ax.text(last_x+0.8, tp2, f' TP2 {tp2:.4f} ', backgroundcolor='#2E7D32', color='white', fontsize=7, va='center')
         ax.text(last_x+0.8, tp3, f' TP3 {tp3:.4f} ', backgroundcolor='#1B5E20', color='white', fontsize=7, va='center')
-
-        # Trend Arrow
+        ax.text(1, sup, f' SUP {sup:.4f} ', fontsize=6, backgroundcolor='#26A69A', color='white', va='center')
+        ax.text(1, res, f' RES {res:.4f} ', fontsize=6, backgroundcolor='#EF5350', color='white', va='center')
         x_arrow = last_x-6
-        if direction=="BUY":
-            ax.annotate('', xy=(x_arrow+1, tp3), xytext=(x_arrow, entry), arrowprops=dict(facecolor='#26A69A', edgecolor='#26A69A', width=3, headwidth=12, headlength=10))
-        else:
-            ax.annotate('', xy=(x_arrow+1, tp3), xytext=(x_arrow, entry), arrowprops=dict(facecolor='#EF5350', edgecolor='#EF5350', width=3, headwidth=12, headlength=10))
-
+        arrow_color = '#26A69A' if direction=="BUY" else '#EF5350'
+        ax.annotate('', xy=(x_arrow+1, tp3), xytext=(x_arrow, entry), arrowprops=dict(facecolor=arrow_color, edgecolor=arrow_color, width=3, headwidth=12, headlength=10))
         pair = f"{symbol}USDT" if symbol!="XAUUSD" else "XAUUSD"
         lev_text = "15x Safe" if symbol!="XAUUSD" else "20x Safe"
         title_color = '#26A69A' if direction=="BUY" else '#EF5350'
-        ax.set_title(f"{pair} | {direction} | {symbol} - 4H | EMA20/50/200 | Lev {lev_text}", loc='left', fontsize=11, fontweight='bold', color=title_color)
-
-        ax.legend(loc='upper left', fontsize=7)
+        ax.set_title(f"{pair} | {direction} | {trend_txt} | Conf {conf:.0f}% | EMA20/50/200 | Lev {lev_text} | 4H", loc='left', fontsize=11, fontweight='bold', color=title_color)
+        ax.text(0.02, 0.97, f"CONFIDENCE: {conf:.0f}%\n{trend_txt}\nSUP {sup:.4f} | RES {res:.4f}\n{pair} 4H PRO", transform=ax.transAxes, fontsize=9, fontweight='bold', bbox=dict(boxstyle="round,pad=0.4", facecolor="white", edgecolor=title_color, alpha=0.95), va='top', color=title_color)
+        ax.legend(loc='upper left', fontsize=7, bbox_to_anchor=(0.18,0.96))
         ax.grid(True, alpha=0.15)
         plt.tight_layout()
         buf=io.BytesIO()
-        plt.savefig(buf, format='png', dpi=160)
+        plt.savefig(buf, format='png', dpi=170)
         buf.seek(0)
         plt.close(fig)
         buf.name=f"{symbol}_4H_PRO.png"
@@ -277,7 +262,7 @@ def coins_kb():
     return InlineKeyboardMarkup(btns)
 
 async def start(u,c):
-    await u.message.reply_text("✅ 4H PRO CHART - CANDLE + EMA + TP/SL ✅\n\n🕯️ Red/Green Candle\n📈 EMA20/50/200\n💰 ENTRY/SL/TP1/TP2/TP3 on image\n\nTap:",reply_markup=coins_kb())
+    await u.message.reply_text("✅ 4H PRO CHART + SUP/RES + CONF ✅\n\n🕯️ Candle\n📈 EMA\n💰 ENTRY/SL/TP1/2/3\n📦 SUP/RES\n🎯 Confidence on image\n\nTap:",reply_markup=coins_kb())
 
 async def btn_handler(u,c):
     q=u.callback_query
@@ -293,16 +278,14 @@ async def btn_handler(u,c):
     LAST_CLICK[user_id]=now
     try:
         await q.edit_message_text(f"📊 Analyzing {code} 4H PRO... ⏳")
-    except:
-        pass
+    except: pass
     try:
         await run(q,code,c)
     except Exception as e:
         print(traceback.format_exc())
         try:
             await q.message.reply_text(f"❌ {code} {e}",reply_markup=coins_kb())
-        except:
-            pass
+        except: pass
 
 async def txt_handler(u,c):
     s=clean((u.message.text or "").strip())
@@ -342,7 +325,7 @@ Entry: {fmt(r['entry'])}
 {risk_txt}
 """
         try:
-            chart_buf=generate_chart_image(r['code'], r['dir'], r['entry'], r['sl'], r['tp1'], r['tp2'], r['tp3'], r['kl'])
+            chart_buf=generate_chart_image(r['code'], r['dir'], r['entry'], r['sl'], r['tp1'], r['tp2'], r['tp3'], r['kl'], r['sup'], r['res'], r['conf'], r['trend'])
             if chart_buf:
                 await context.bot.send_photo(chat_id=upd.message.chat.id, photo=chart_buf, caption=msg, reply_markup=coins_kb())
                 return
@@ -367,7 +350,7 @@ def run_bot():
     a.add_handler(CommandHandler("coins",start))
     a.add_handler(CallbackQueryHandler(btn_handler))
     a.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,txt_handler))
-    print("Bot starting 4H PRO...")
+    print("Bot starting 4H PRO SUP/RES CONF...")
     a.run_polling(drop_pending_updates=True)
 
 if __name__=="__main__":
