@@ -1,4 +1,4 @@
-import os,re,threading,requests,time,traceback,io
+import os,re,threading,requests,time,traceback,io,asyncio
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
@@ -13,10 +13,12 @@ app=Flask(__name__)
 SESSION=requests.Session()
 SESSION.headers.update({"User-Agent":"Mozilla/5.0"})
 CACHE={}
+LAST_CLICK={}
+
 CRYPTO={"BTC":"BTCUSDT","ETH":"ETHUSDT","BNB":"BNBUSDT","SOL":"SOLUSDT","XRP":"XRPUSDT","DOGE":"DOGEUSDT","ADA":"ADAUSDT","AVAX":"AVAXUSDT","LINK":"LINKUSDT","TRX":"TRXUSDT","DOT":"DOTUSDT","MATIC":"MATICUSDT","LTC":"LTCUSDT","BCH":"BCHUSDT","UNI":"UNIUSDT","ATOM":"ATOMUSDT","ETC":"ETCUSDT","FIL":"FILUSDT","PEPE":"PEPEUSDT","BONK":"BONKUSDT","SHIB":"SHIBUSDT","FLOKI":"FLOKIUSDT","WIF":"WIFUSDT","BOME":"BOMEUSDT","PAXG":"PAXGUSDT"}
 
 @app.get("/")
-def home(): return "SKELLY 50/50 + PHOTO + RISK OK",200
+def home(): return "SKELLY 50/50 + PHOTO + RISK + ANTI-SPAM OK",200
 @app.get("/health")
 def health(): return {"ok":True},200
 
@@ -27,6 +29,7 @@ def clean(t):
     if t in m: t=m[t]
     if t.endswith("USDT") and t[:-4] in CRYPTO: return t[:-4]
     return t
+
 def fmt(v):
     try:
         if v is None: return "0"
@@ -61,6 +64,7 @@ def ema(arr,p):
     k=2/(p+1); e=sum(arr[:p])/p
     for x in arr[p:]: e=(x-e)*k+e
     return e
+
 def rsi_calc(arr,p=14):
     if len(arr)<p+1: return 50
     gains=losses=0
@@ -198,8 +202,7 @@ def get_risk_calculator_text(entry, sl, tp1, tp2, tp3, lev_str, direction):
         return f"""
 
 💵 RISK CALCULATOR (Lev {lev_num}x):
-⛔ SL {sl_pct:.2f}%:
- $10 -> ${m(sl_pct,10):.2f} | $100 -> ${m(sl_pct,100):.2f} | $1000 -> ${m(sl_pct,1000):.2f}
+⛔ SL {sl_pct:.2f}%: $10 -> ${m(sl_pct,10):.2f} | $100 -> ${m(sl_pct,100):.2f} | $1000 -> ${m(sl_pct,1000):.2f}
 🎯 TP1 +{abs(tp1_pct):.2f}%: $100 -> +${abs(m(tp1_pct,100)):.2f} | $1000 -> +${abs(m(tp1_pct,1000)):.2f}
 🎯 TP2 +{abs(tp2_pct):.2f}%: $100 -> +${abs(m(tp2_pct,100)):.2f}
 🚀 TP3 +{abs(tp3_pct):.2f}% MOON: $100 -> +${abs(m(tp3_pct,100)):.2f} | $1000 -> +${abs(m(tp3_pct,1000)):.2f}
@@ -212,28 +215,38 @@ def coins_kb():
     ks=list(CRYPTO.keys()); btns=[]; row=[]
     for c in ks:
         row.append(InlineKeyboardButton(c,callback_data=f"C_{c}"))
-        if len(row)==3: btns.append(row); row=[]
+        if len(row)==4: btns.append(row); row=[]
     if row: btns.append(row)
     btns.append([InlineKeyboardButton("🥇 XAUUSD GOLD LIVE",callback_data="C_XAUUSD")])
     return InlineKeyboardMarkup(btns)
 
 async def start(u,c):
-    await u.message.reply_text("✅ 50/50 BALANCED - BUY & SELL BOTH WILL SHOW ✅\n\nTrend 50% + Candle 50% = Real BUY/SELL\n📸 Chart + Risk Calculator Added ✅\n\nTap:",reply_markup=coins_kb())
+    await u.message.reply_text("✅ 50/50 BALANCED - BUY & SELL BOTH WILL SHOW ✅\n\nTrend 50% + Candle 50% = Real BUY/SELL\n📸 Chart + Risk Calculator Added ✅\nFix: Click all coins now works! ✅\n\nTap:",reply_markup=coins_kb())
 
 async def btn_handler(u,c):
     q=u.callback_query
     await q.answer()
     d=q.data
-    if d.startswith("C_"):
-        code=d[2:]
-        await q.edit_message_text(f"📊 1H Balanced 50/50 Analysis for {code}...")
+    if not d.startswith("C_"): return
+    code=d[2:]
+    user_id=q.from_user.id
+    now=time.time()
+    if user_id in LAST_CLICK and now - LAST_CLICK[user_id] < 1.5:
+        await q.answer("⏳ Wait small boss!", show_alert=False)
+        return
+    LAST_CLICK[user_id]=now
+    try:
+        await q.edit_message_text(f"📊 Analyzing {code}... ⏳")
+    except:
+        pass
+    try:
+        await run(q,code,c)
+    except Exception as e:
+        print(traceback.format_exc())
         try:
-            await run(q,code,c)
-        except Exception as e:
-            print(traceback.format_exc())
-            try:
-                await q.edit_message_text(f"❌ {code} {e}",reply_markup=coins_kb())
-            except: pass
+            await q.message.reply_text(f"❌ {code} {e}",reply_markup=coins_kb())
+        except:
+            pass
 
 async def txt_handler(u,c):
     s=clean((u.message.text or "").strip())
@@ -283,9 +296,7 @@ Leverage: {r['lev']}
                 return
         except Exception as e:
             print(f"Chart send failed {e}")
-
         await upd.message.reply_text(msg,reply_markup=coins_kb())
-
     except Exception as e:
         print(traceback.format_exc())
         try:
