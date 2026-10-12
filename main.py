@@ -18,7 +18,7 @@ LAST_CLICK={}
 CRYPTO={"BTC":"BTCUSDT","ETH":"ETHUSDT","BNB":"BNBUSDT","SOL":"SOLUSDT","XRP":"XRPUSDT","DOGE":"DOGEUSDT","ADA":"ADAUSDT","AVAX":"AVAXUSDT","LINK":"LINKUSDT","TRX":"TRXUSDT","DOT":"DOTUSDT","MATIC":"MATICUSDT","LTC":"LTCUSDT","BCH":"BCHUSDT","UNI":"UNIUSDT","ATOM":"ATOMUSDT","ETC":"ETCUSDT","FIL":"FILUSDT","PEPE":"PEPEUSDT","BONK":"BONKUSDT","SHIB":"SHIBUSDT","FLOKI":"FLOKIUSDT","WIF":"WIFUSDT","BOME":"BOMEUSDT","PAXG":"PAXGUSDT"}
 
 @app.get("/")
-def home(): return "SKELLY 50/50 + PHOTO + RISK + ANTI-SPAM OK",200
+def home(): return "SKELLY 4H 50/50 + PHOTO + RISK + ANTI-SPAM OK",200
 @app.get("/health")
 def health(): return {"ok":True},200
 
@@ -37,18 +37,18 @@ def fmt(v):
     except: return str(v)
 
 def get_klines(sym):
-    if sym in CACHE and time.time()-CACHE[sym][0]<60:
+    if sym in CACHE and time.time()-CACHE[sym][0]<240:
         return CACHE[sym][1]
     kl=[]
     try:
-        r=SESSION.get("https://www.okx.com/api/v5/market/candles",params={"instId":sym.replace("USDT","-USDT"),"bar":"1H","limit":"100"},timeout=12).json()
+        r=SESSION.get("https://www.okx.com/api/v5/market/candles",params={"instId":sym.replace("USDT","-USDT"),"bar":"4H","limit":"200"},timeout=12).json()
         data=r.get("data",[])
         if len(data)>=60:
             kl=[{"o":float(x[1]),"h":float(x[2]),"l":float(x[3]),"c":float(x[4]),"v":float(x[5])} for x in data][::-1]
     except: pass
     if not kl:
         try:
-            r=SESSION.get("https://data-api.binance.vision/api/v3/klines",params={"symbol":sym,"interval":"1h","limit":100},timeout=12).json()
+            r=SESSION.get("https://data-api.binance.vision/api/v3/klines",params={"symbol":sym,"interval":"4h","limit":200},timeout=12).json()
             if isinstance(r,list) and len(r)>=60:
                 kl=[{"o":float(x[1]),"h":float(x[2]),"l":float(x[3]),"c":float(x[4]),"v":float(x[5])} for x in r]
         except: pass
@@ -110,7 +110,7 @@ def analyze_balanced(code):
     if len(kl)<40: return {"error":True,"msg":f"No data {code}"}
     closes=[c["c"] for c in kl]
     live=closes[-1]
-    src="1H BINANCE/OKX LIVE"
+    src="4H BINANCE/OKX LIVE"
     if code=="XAUUSD":
         try:
             r=SESSION.get("https://api.gold-api.com/price/XAU",timeout=4).json()
@@ -119,7 +119,7 @@ def analyze_balanced(code):
                 diff=p-live
                 for c in kl: c["o"]+=diff; c["h"]+=diff; c["l"]+=diff; c["c"]+=diff
                 closes=[c["c"] for c in kl]; live=p
-                src=f"REAL GOLD LIVE ${p:.2f}"
+                src=f"REAL GOLD LIVE ${p:.2f} | 4H CHART"
         except: pass
     e20=ema(closes,20); e50=ema(closes,50); e200=ema(closes,200)
     rsi=rsi_calc(closes)
@@ -142,14 +142,15 @@ def analyze_balanced(code):
     t_score=max(-100,min(100,t_score))
     pats, c_score = detect_patterns_scored(kl)
     final = (t_score*0.5 + c_score*0.5)
+    # 4H TP/SL - bigger move
     if final>=5:
-        direction="BUY"; entry=live; sl=sup-atr*0.3; risk=max(entry-sl,atr*0.5); tp1=entry+risk*2; tp2=entry+risk*3.5; tp3=entry+risk*6
+        direction="BUY"; entry=live; sl=sup-atr*0.5; risk=max(entry-sl,atr*0.6); tp1=entry+risk*1.5; tp2=entry+risk*3.0; tp3=entry+risk*5.0
     else:
-        direction="SELL"; entry=live; sl=res+atr*0.3; risk=max(sl-entry,atr*0.5); tp1=entry-risk*2; tp2=entry-risk*3.5; tp3=entry-risk*6
+        direction="SELL"; entry=live; sl=res+atr*0.5; risk=max(sl-entry,atr*0.6); tp1=entry-risk*1.5; tp2=entry-risk*3.0; tp3=entry-risk*5.0
     atr_pct=atr/live*100 if live!=0 else 1
     if atr_pct<0.5: lev="20x-25x (Low Vol)"
-    elif atr_pct<1.2: lev="10x-15x (Normal)"
-    else: lev="5x-7x (High Vol)"
+    elif atr_pct<1.2: lev="10x-15x (Normal 4H)"
+    else: lev="5x-7x (High Vol 4H)"
     conf = 60 + abs(final)*0.35
     conf = min(92, max(62, conf))
     trend_txt = "STRONG UPTREND 🚀" if t_score>60 else "UPTREND 📈" if t_score>15 else "STRONG DOWNTREND 📉" if t_score<-60 else "DOWNTREND 📉" if t_score<-15 else "SIDEWAYS ↔️"
@@ -172,7 +173,7 @@ def generate_chart_image(symbol, direction, entry, sl, tp1, tp3, kl):
         ax.annotate('', xy=(x_arrow+1, tp3), xytext=(x_arrow, entry), arrowprops=dict(facecolor='black', edgecolor='black', width=2.5, headwidth=10, headlength=8))
         pair=f"{symbol}USDT" if symbol!="XAUUSD" else "XAUUSD"
         lev_text="15x Safe" if symbol!="XAUUSD" else "20x Safe"
-        ax.set_title(f"{pair} SMC | {direction} | Lev {lev_text} | {pair} - 1H", loc='left', fontsize=10, fontweight='bold')
+        ax.set_title(f"{pair} SMC | {direction} | Lev {lev_text} | {pair} - 4H", loc='left', fontsize=10, fontweight='bold')
         ax.grid(True, alpha=0.12)
         plt.tight_layout()
         buf=io.BytesIO()
@@ -201,12 +202,12 @@ def get_risk_calculator_text(entry, sl, tp1, tp2, tp3, lev_str, direction):
         def m(pct,bal): return bal*pct/100
         return f"""
 
-💵 RISK CALCULATOR (Lev {lev_num}x):
+💵 RISK CALCULATOR (Lev {lev_num}x) - 4H:
 ⛔ SL {sl_pct:.2f}%: $10 -> ${m(sl_pct,10):.2f} | $100 -> ${m(sl_pct,100):.2f} | $1000 -> ${m(sl_pct,1000):.2f}
-🎯 TP1 +{abs(tp1_pct):.2f}%: $100 -> +${abs(m(tp1_pct,100)):.2f} | $1000 -> +${abs(m(tp1_pct,1000)):.2f}
-🎯 TP2 +{abs(tp2_pct):.2f}%: $100 -> +${abs(m(tp2_pct,100)):.2f}
-🚀 TP3 +{abs(tp3_pct):.2f}% MOON: $100 -> +${abs(m(tp3_pct,100)):.2f} | $1000 -> +${abs(m(tp3_pct,1000)):.2f}
-⚠️ Use 1-2% risk per trade!
+🎯 TP1 +{abs(tp1_pct):.2f}% (Hit in ~4H): $100 -> +${abs(m(tp1_pct,100)):.2f} | $1000 -> +${abs(m(tp1_pct,1000)):.2f}
+🎯 TP2 +{abs(tp2_pct):.2f}% (8-12H): $100 -> +${abs(m(tp2_pct,100)):.2f}
+🚀 TP3 +{abs(tp3_pct):.2f}% MOON (16-24H): $100 -> +${abs(m(tp3_pct,100)):.2f} | $1000 -> +${abs(m(tp3_pct,1000)):.2f}
+⚠️ Use 1-2% risk per trade! 4H needs patience.
 """
     except:
         return ""
@@ -221,7 +222,7 @@ def coins_kb():
     return InlineKeyboardMarkup(btns)
 
 async def start(u,c):
-    await u.message.reply_text("✅ 50/50 BALANCED - BUY & SELL BOTH WILL SHOW ✅\n\nTrend 50% + Candle 50% = Real BUY/SELL\n📸 Chart + Risk Calculator Added ✅\nFix: Click all coins now works! ✅\n\nTap:",reply_markup=coins_kb())
+    await u.message.reply_text("✅ 4H 50/50 BALANCED - BUY & SELL BOTH WILL SHOW ✅\n\nTrend 50% + Candle 50% = Real BUY/SELL\n📸 Chart + Risk Calculator 4H Added ✅\nTP1 = 4H Hit | TP2 = 8-12H | TP3 = 16-24H\n\nTap:",reply_markup=coins_kb())
 
 async def btn_handler(u,c):
     q=u.callback_query
@@ -236,7 +237,7 @@ async def btn_handler(u,c):
         return
     LAST_CLICK[user_id]=now
     try:
-        await q.edit_message_text(f"📊 Analyzing {code}... ⏳")
+        await q.edit_message_text(f"📊 Analyzing {code} 4H... ⏳")
     except:
         pass
     try:
@@ -251,7 +252,7 @@ async def btn_handler(u,c):
 async def txt_handler(u,c):
     s=clean((u.message.text or "").strip())
     if s in CRYPTO or s=="XAUUSD":
-        await u.message.reply_text(f"📊 1H Balanced 50/50 Analysis for {s}...")
+        await u.message.reply_text(f"📊 4H Balanced 50/50 Analysis for {s}...")
         await run(u,s,c)
 
 async def run(upd, code, context):
@@ -262,12 +263,13 @@ async def run(upd, code, context):
             return
         pats_txt="\n".join([f"• {p}" for p in r["pats"]])
         risk_txt=get_risk_calculator_text(r["entry"], r["sl"], r["tp1"], r["tp2"], r["tp3"], r["lev"], r["dir"])
-        msg=f"""{"🟢" if r['dir']=="BUY" else "🔴"} {r['code']} {r['dir']} SIGNAL - 1H TIMEFRAME
+        msg=f"""{"🟢" if r['dir']=="BUY" else "🔴"} {r['code']} {r['dir']} SIGNAL - 4H TIMEFRAME
 
 💰 Price: {fmt(r['price'])} | {r['src']}
-⏰ TF: 1 HOUR | Confidence: {r['conf']:.0f}%
+⏰ TF: 4 HOUR | Confidence: {r['conf']:.0f}%
+⏳ TP1 Hit ETA: ~4H | TP2: ~8-12H | TP3: ~16-24H
 
-📊 1H 50/50 ANALYSIS:
+📊 4H 50/50 ANALYSIS:
 Trend: {r['trend']} ({r['t_score']:.0f}/100)
 EMA20 {fmt(r['e20'])} | EMA50 {fmt(r['e50'])} | EMA200 {fmt(r['e200'])}
 RSI {r['rsi']:.0f} | ATR {fmt(r['atr'])}
@@ -278,15 +280,15 @@ Support {fmt(r['sup'])} | Resistance {fmt(r['res'])}
 
 ⚖️ FINAL 50/50: Trend {r['t_score']:.0f} + Candle {r['c_score']:.0f} = {r['final']:.0f} → {r['dir']}
 
-💵 PERFECT ENTRY:
+💵 PERFECT ENTRY (4H):
 Direction: {r['dir']}
 Entry: {fmt(r['entry'])}
 Leverage: {r['lev']}
 
 🛑 SL: {fmt(r['sl'])}
-🎯 TP1: {fmt(r['tp1'])} (2R)
-🎯 TP2: {fmt(r['tp2'])} (3.5R)
-🎯 TP3: {fmt(r['tp3'])} (6R)
+🎯 TP1: {fmt(r['tp1'])} (1.5R - 4H Hit)
+🎯 TP2: {fmt(r['tp2'])} (3R - 8-12H)
+🎯 TP3: {fmt(r['tp3'])} (5R - 16-24H)
 {risk_txt}
 """
         try:
@@ -315,7 +317,7 @@ def run_bot():
     a.add_handler(CommandHandler("coins",start))
     a.add_handler(CallbackQueryHandler(btn_handler))
     a.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,txt_handler))
-    print("Bot starting...")
+    print("Bot starting 4H...")
     a.run_polling(drop_pending_updates=True)
 
 if __name__=="__main__":
