@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 from flask import Flask
 from telegram import InlineKeyboardButton,InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder,CommandHandler,MessageHandler,CallbackQueryHandler,filters
@@ -18,7 +19,7 @@ LAST_CLICK={}
 CRYPTO={"BTC":"BTCUSDT","ETH":"ETHUSDT","BNB":"BNBUSDT","SOL":"SOLUSDT","XRP":"XRPUSDT","DOGE":"DOGEUSDT","ADA":"ADAUSDT","AVAX":"AVAXUSDT","LINK":"LINKUSDT","TRX":"TRXUSDT","DOT":"DOTUSDT","MATIC":"MATICUSDT","LTC":"LTCUSDT","BCH":"BCHUSDT","UNI":"UNIUSDT","ATOM":"ATOMUSDT","ETC":"ETCUSDT","FIL":"FILUSDT","PEPE":"PEPEUSDT","BONK":"BONKUSDT","SHIB":"SHIBUSDT","FLOKI":"FLOKIUSDT","WIF":"WIFUSDT","BOME":"BOMEUSDT","PAXG":"PAXGUSDT"}
 
 @app.get("/")
-def home(): return "SKELLY 4H 50/50 + PHOTO + RISK + ANTI-SPAM OK",200
+def home(): return "SKELLY 4H PRO CHART OK",200
 @app.get("/health")
 def health(): return {"ok":True},200
 
@@ -64,6 +65,20 @@ def ema(arr,p):
     k=2/(p+1); e=sum(arr[:p])/p
     for x in arr[p:]: e=(x-e)*k+e
     return e
+
+def ema_series(arr, p):
+    # for chart EMA lines
+    res=[]
+    if len(arr)<p: return [sum(arr)/len(arr)]*len(arr) if arr else []
+    k=2/(p+1)
+    e=sum(arr[:p])/p
+    res=[e]*p
+    for x in arr[p:]:
+        e=(x-e)*k+e
+        res.append(e)
+    # pad to same len
+    while len(res)<len(arr): res.insert(0,res[0])
+    return res[-len(arr):]
 
 def rsi_calc(arr,p=14):
     if len(arr)<p+1: return 50
@@ -142,7 +157,6 @@ def analyze_balanced(code):
     t_score=max(-100,min(100,t_score))
     pats, c_score = detect_patterns_scored(kl)
     final = (t_score*0.5 + c_score*0.5)
-    # 4H TP/SL - bigger move
     if final>=5:
         direction="BUY"; entry=live; sl=sup-atr*0.5; risk=max(entry-sl,atr*0.6); tp1=entry+risk*1.5; tp2=entry+risk*3.0; tp3=entry+risk*5.0
     else:
@@ -156,34 +170,75 @@ def analyze_balanced(code):
     trend_txt = "STRONG UPTREND 🚀" if t_score>60 else "UPTREND 📈" if t_score>15 else "STRONG DOWNTREND 📉" if t_score<-60 else "DOWNTREND 📉" if t_score<-15 else "SIDEWAYS ↔️"
     return {"error":False,"code":code,"price":live,"src":src,"trend":trend_txt,"e20":e20,"e50":e50,"e200":e200,"rsi":rsi,"sup":sup,"res":res,"atr":atr,"t_score":t_score,"c_score":c_score,"final":final,"pats":pats,"dir":direction,"entry":entry,"sl":sl,"tp1":tp1,"tp2":tp2,"tp3":tp3,"lev":lev,"conf":conf,"kl":kl}
 
-def generate_chart_image(symbol, direction, entry, sl, tp1, tp3, kl):
+# === NEW PRO CHART WITH CANDLES + EMA + TP/SL ===
+def generate_chart_image(symbol, direction, entry, sl, tp1, tp2, tp3, kl):
     try:
-        closes=[c["c"] for c in kl[-80:]]
-        fig, ax=plt.subplots(figsize=(10,5.2), facecolor='white')
-        ax.plot(closes, color='black', linewidth=1)
-        ax.axhline(entry, color='#2962FF', linewidth=1.8)
-        ax.axhline(sl, color='black', linewidth=1.2)
-        ax.axhline(tp3, color='black', linewidth=1.2)
-        last_x=len(closes)-1
-        ax.text(last_x+0.5, entry, ' ENTRY ', backgroundcolor='#2962FF', color='white', weight='bold', fontsize=9, va='center')
-        ax.text(last_x+0.5, sl, ' SL ', backgroundcolor='black', color='white', fontsize=8, va='center')
-        ax.text(last_x+0.5, tp3, ' TP3 ', backgroundcolor='black', color='white', fontsize=8, va='center')
-        ax.fill_between([last_x-15, last_x+1], entry*0.999, entry*1.001, color='#2962FF', alpha=0.18)
-        x_arrow=last_x-7
-        ax.annotate('', xy=(x_arrow+1, tp3), xytext=(x_arrow, entry), arrowprops=dict(facecolor='black', edgecolor='black', width=2.5, headwidth=10, headlength=8))
-        pair=f"{symbol}USDT" if symbol!="XAUUSD" else "XAUUSD"
-        lev_text="15x Safe" if symbol!="XAUUSD" else "20x Safe"
-        ax.set_title(f"{pair} SMC | {direction} | Lev {lev_text} | {pair} - 4H", loc='left', fontsize=10, fontweight='bold')
-        ax.grid(True, alpha=0.12)
+        data = kl[-80:]
+        closes = [c["c"] for c in kl]
+        e20_s = ema_series(closes,20)[-80:]
+        e50_s = ema_series(closes,50)[-80:]
+        e200_s = ema_series(closes,200)[-80:]
+
+        fig, ax = plt.subplots(figsize=(12,6), facecolor='white')
+
+        # Candles
+        for i, c in enumerate(data):
+            color = '#26A69A' if c["c"] >= c["o"] else '#EF5350'
+            # wick
+            ax.plot([i, i], [c["l"], c["h"]], color=color, linewidth=0.8)
+            # body
+            body_h = abs(c["c"]-c["o"])
+            body_y = min(c["o"], c["c"])
+            # ensure visible body
+            if body_h < (max([x["h"]-x["l"] for x in data]) * 0.01):
+                body_h = max([x["h"]-x["l"] for x in data]) * 0.01
+            rect = Rectangle((i-0.35, body_y), 0.7, body_h if body_h>0 else 0.001, facecolor=color, edgecolor=color)
+            ax.add_patch(rect)
+
+        # EMAs
+        ax.plot(e20_s, color='#FFC107', linewidth=1.1, label='EMA20', alpha=0.9)
+        ax.plot(e50_s, color='#2962FF', linewidth=1.1, label='EMA50', alpha=0.9)
+        ax.plot(e200_s, color='#9C27B0', linewidth=1.1, label='EMA200', alpha=0.9)
+
+        last_x = len(data)-1
+
+        # ENTRY SL TP lines
+        ax.axhline(entry, color='#2962FF', linewidth=1.8, linestyle='-', alpha=0.9)
+        ax.axhline(sl, color='#D32F2F', linewidth=1.4, linestyle='--')
+        ax.axhline(tp1, color='#2E7D32', linewidth=1.2, linestyle='--')
+        ax.axhline(tp2, color='#2E7D32', linewidth=1.2, linestyle='-.')
+        ax.axhline(tp3, color='#1B5E20', linewidth=1.4, linestyle='-')
+
+        # Labels on right
+        ax.text(last_x+0.8, entry, f' ENTRY {entry:.4f} ', backgroundcolor='#2962FF', color='white', weight='bold', fontsize=8, va='center')
+        ax.text(last_x+0.8, sl, f' SL {sl:.4f} ', backgroundcolor='#D32F2F', color='white', fontsize=7, va='center')
+        ax.text(last_x+0.8, tp1, f' TP1 {tp1:.4f} ', backgroundcolor='#2E7D32', color='white', fontsize=7, va='center')
+        ax.text(last_x+0.8, tp2, f' TP2 {tp2:.4f} ', backgroundcolor='#2E7D32', color='white', fontsize=7, va='center')
+        ax.text(last_x+0.8, tp3, f' TP3 {tp3:.4f} ', backgroundcolor='#1B5E20', color='white', fontsize=7, va='center')
+
+        # Trend Arrow
+        x_arrow = last_x-6
+        if direction=="BUY":
+            ax.annotate('', xy=(x_arrow+1, tp3), xytext=(x_arrow, entry), arrowprops=dict(facecolor='#26A69A', edgecolor='#26A69A', width=3, headwidth=12, headlength=10))
+        else:
+            ax.annotate('', xy=(x_arrow+1, tp3), xytext=(x_arrow, entry), arrowprops=dict(facecolor='#EF5350', edgecolor='#EF5350', width=3, headwidth=12, headlength=10))
+
+        pair = f"{symbol}USDT" if symbol!="XAUUSD" else "XAUUSD"
+        lev_text = "15x Safe" if symbol!="XAUUSD" else "20x Safe"
+        title_color = '#26A69A' if direction=="BUY" else '#EF5350'
+        ax.set_title(f"{pair} | {direction} | {symbol} - 4H | EMA20/50/200 | Lev {lev_text}", loc='left', fontsize=11, fontweight='bold', color=title_color)
+
+        ax.legend(loc='upper left', fontsize=7)
+        ax.grid(True, alpha=0.15)
         plt.tight_layout()
         buf=io.BytesIO()
-        plt.savefig(buf, format='png', dpi=150)
+        plt.savefig(buf, format='png', dpi=160)
         buf.seek(0)
         plt.close(fig)
-        buf.name=f"{symbol}.png"
+        buf.name=f"{symbol}_4H_PRO.png"
         return buf
     except Exception as e:
-        print(f"chart error {e}")
+        print(f"chart error {e} {traceback.format_exc()}")
         return None
 
 def get_risk_calculator_text(entry, sl, tp1, tp2, tp3, lev_str, direction):
@@ -204,10 +259,10 @@ def get_risk_calculator_text(entry, sl, tp1, tp2, tp3, lev_str, direction):
 
 💵 RISK CALCULATOR (Lev {lev_num}x) - 4H:
 ⛔ SL {sl_pct:.2f}%: $10 -> ${m(sl_pct,10):.2f} | $100 -> ${m(sl_pct,100):.2f} | $1000 -> ${m(sl_pct,1000):.2f}
-🎯 TP1 +{abs(tp1_pct):.2f}% (Hit in ~4H): $100 -> +${abs(m(tp1_pct,100)):.2f} | $1000 -> +${abs(m(tp1_pct,1000)):.2f}
+🎯 TP1 +{abs(tp1_pct):.2f}% (4H): $100 -> +${abs(m(tp1_pct,100)):.2f}
 🎯 TP2 +{abs(tp2_pct):.2f}% (8-12H): $100 -> +${abs(m(tp2_pct,100)):.2f}
-🚀 TP3 +{abs(tp3_pct):.2f}% MOON (16-24H): $100 -> +${abs(m(tp3_pct,100)):.2f} | $1000 -> +${abs(m(tp3_pct,1000)):.2f}
-⚠️ Use 1-2% risk per trade! 4H needs patience.
+🚀 TP3 +{abs(tp3_pct):.2f}% MOON: $100 -> +${abs(m(tp3_pct,100)):.2f}
+⚠️ Use 1-2% risk per trade!
 """
     except:
         return ""
@@ -222,7 +277,7 @@ def coins_kb():
     return InlineKeyboardMarkup(btns)
 
 async def start(u,c):
-    await u.message.reply_text("✅ 4H 50/50 BALANCED - BUY & SELL BOTH WILL SHOW ✅\n\nTrend 50% + Candle 50% = Real BUY/SELL\n📸 Chart + Risk Calculator 4H Added ✅\nTP1 = 4H Hit | TP2 = 8-12H | TP3 = 16-24H\n\nTap:",reply_markup=coins_kb())
+    await u.message.reply_text("✅ 4H PRO CHART - CANDLE + EMA + TP/SL ✅\n\n🕯️ Red/Green Candle\n📈 EMA20/50/200\n💰 ENTRY/SL/TP1/TP2/TP3 on image\n\nTap:",reply_markup=coins_kb())
 
 async def btn_handler(u,c):
     q=u.callback_query
@@ -237,7 +292,7 @@ async def btn_handler(u,c):
         return
     LAST_CLICK[user_id]=now
     try:
-        await q.edit_message_text(f"📊 Analyzing {code} 4H... ⏳")
+        await q.edit_message_text(f"📊 Analyzing {code} 4H PRO... ⏳")
     except:
         pass
     try:
@@ -252,7 +307,7 @@ async def btn_handler(u,c):
 async def txt_handler(u,c):
     s=clean((u.message.text or "").strip())
     if s in CRYPTO or s=="XAUUSD":
-        await u.message.reply_text(f"📊 4H Balanced 50/50 Analysis for {s}...")
+        await u.message.reply_text(f"📊 4H PRO Analysis for {s}...")
         await run(u,s,c)
 
 async def run(upd, code, context):
@@ -267,32 +322,27 @@ async def run(upd, code, context):
 
 💰 Price: {fmt(r['price'])} | {r['src']}
 ⏰ TF: 4 HOUR | Confidence: {r['conf']:.0f}%
-⏳ TP1 Hit ETA: ~4H | TP2: ~8-12H | TP3: ~16-24H
 
-📊 4H 50/50 ANALYSIS:
+📊 4H ANALYSIS:
 Trend: {r['trend']} ({r['t_score']:.0f}/100)
 EMA20 {fmt(r['e20'])} | EMA50 {fmt(r['e50'])} | EMA200 {fmt(r['e200'])}
 RSI {r['rsi']:.0f} | ATR {fmt(r['atr'])}
 Support {fmt(r['sup'])} | Resistance {fmt(r['res'])}
 
-🕯️ CANDLE SCORE (50%): {r['c_score']:.0f}/100
+🕯️ CANDLE: {r['c_score']:.0f}/100
 {pats_txt}
 
-⚖️ FINAL 50/50: Trend {r['t_score']:.0f} + Candle {r['c_score']:.0f} = {r['final']:.0f} → {r['dir']}
-
-💵 PERFECT ENTRY (4H):
-Direction: {r['dir']}
+💵 ENTRY (4H):
+Dir: {r['dir']} | Lev: {r['lev']}
 Entry: {fmt(r['entry'])}
-Leverage: {r['lev']}
-
 🛑 SL: {fmt(r['sl'])}
-🎯 TP1: {fmt(r['tp1'])} (1.5R - 4H Hit)
-🎯 TP2: {fmt(r['tp2'])} (3R - 8-12H)
-🎯 TP3: {fmt(r['tp3'])} (5R - 16-24H)
+🎯 TP1: {fmt(r['tp1'])}
+🎯 TP2: {fmt(r['tp2'])}
+🎯 TP3: {fmt(r['tp3'])}
 {risk_txt}
 """
         try:
-            chart_buf=generate_chart_image(r['code'], r['dir'], r['entry'], r['sl'], r['tp1'], r['tp3'], r['kl'])
+            chart_buf=generate_chart_image(r['code'], r['dir'], r['entry'], r['sl'], r['tp1'], r['tp2'], r['tp3'], r['kl'])
             if chart_buf:
                 await context.bot.send_photo(chat_id=upd.message.chat.id, photo=chart_buf, caption=msg, reply_markup=coins_kb())
                 return
@@ -317,7 +367,7 @@ def run_bot():
     a.add_handler(CommandHandler("coins",start))
     a.add_handler(CallbackQueryHandler(btn_handler))
     a.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,txt_handler))
-    print("Bot starting 4H...")
+    print("Bot starting 4H PRO...")
     a.run_polling(drop_pending_updates=True)
 
 if __name__=="__main__":
