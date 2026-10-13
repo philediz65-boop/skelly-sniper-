@@ -20,7 +20,7 @@ CRYPTO={"BTC":"BTCUSDT","ETH":"ETHUSDT","BNB":"BNBUSDT","SOL":"SOLUSDT","XRP":"X
 FAST_COINS={"PEPE","BONK","WIF","BOME","FLOKI","SHIB","DOGE","SOL","AVAX","SUI","ARB","OP","APT","TAO","NOT"}
 
 @app.get("/")
-def home(): return "SKELLY V2.1 80% FIXED VOL BLOCK OK",200
+def home(): return "SKELLY V3 ULTIMATE ALL FEATURES OK",200
 @app.get("/health")
 def health(): return {"ok":True},200
 
@@ -40,20 +40,21 @@ def fmt(v):
 
 def get_klines(sym, interval="4h"):
     key=f"{sym}_{interval}"
-    if key in CACHE and time.time()-CACHE[key][0]<240:
+    if key in CACHE and time.time()-CACHE[key][0]<180:
         return CACHE[key][1]
     kl=[]
     try:
-        bar={"1h":"1H","4h":"4H","1d":"1D"}[interval]
-        r=SESSION.get("https://www.okx.com/api/v5/market/candles",params={"instId":sym.replace("USDT","-USDT"),"bar":bar,"limit":"200"},timeout=12).json()
+        bar_map={"15m":"15m","1h":"1H","4h":"4H","1d":"1D"}
+        bar=bar_map.get(interval, "4H")
+        r=SESSION.get("https://www.okx.com/api/v5/market/candles",params={"instId":sym.replace("USDT","-USDT"),"bar":bar,"limit":"200"},timeout=10).json()
         data=r.get("data",[])
-        if len(data)>=60:
+        if len(data)>=50:
             kl=[{"o":float(x[1]),"h":float(x[2]),"l":float(x[3]),"c":float(x[4]),"v":float(x[5])} for x in data][::-1]
     except: pass
     if not kl:
         try:
-            r=SESSION.get("https://data-api.binance.vision/api/v3/klines",params={"symbol":sym,"interval":interval,"limit":200},timeout=12).json()
-            if isinstance(r,list) and len(r)>=60:
+            r=SESSION.get("https://data-api.binance.vision/api/v3/klines",params={"symbol":sym,"interval":interval,"limit":200},timeout=10).json()
+            if isinstance(r,list) and len(r)>=50:
                 kl=[{"o":float(x[1]),"h":float(x[2]),"l":float(x[3]),"c":float(x[4]),"v":float(x[5])} for x in r]
         except: pass
     if kl:
@@ -88,6 +89,27 @@ def rsi_calc(arr,p=14):
     if losses==0: return 75 if gains>0 else 50
     rs=gains/losses if losses!=0 else 1
     return 100 - (100/(1+rs))
+
+def adx_calc(kl, period=14):
+    try:
+        if len(kl)<period*2: return 15
+        highs=[k["h"] for k in kl]; lows=[k["l"] for k in kl]; closes=[k["c"] for k in kl]
+        tr=[]; plus_dm=[]; minus_dm=[]
+        for i in range(1,len(kl)):
+            hl=highs[i]-lows[i]
+            hc=abs(highs[i]-closes[i-1])
+            lc=abs(lows[i]-closes[i-1])
+            tr.append(max(hl,hc,lc))
+            up=highs[i]-highs[i-1]; down=lows[i-1]-lows[i]
+            plus_dm.append(up if up>down and up>0 else 0)
+            minus_dm.append(down if down>up and down>0 else 0)
+        atr=sum(tr[-period:])/period
+        plus_di=100*(sum(plus_dm[-period:])/period)/atr if atr!=0 else 0
+        minus_di=100*(sum(minus_dm[-period:])/period)/atr if atr!=0 else 0
+        dx=100*abs(plus_di-minus_di)/(plus_di+minus_di) if (plus_di+minus_di)!=0 else 0
+        adx=dx # simplified ADX
+        return adx
+    except: return 18
 
 def get_mtf_trend(closes):
     if len(closes)<50: return 0,"N/A"
@@ -140,12 +162,13 @@ def detect_patterns_scored(kl):
         else: pats.append("BEARISH CANDLE 🔴"); score-=10
     return pats, max(-100,min(100,score))
 
-def analyze_balanced(code):
+def analyze_balanced(code, btc_trend_score=0, use_15m_fallback=False):
     sym=CRYPTO.get(code,"BTCUSDT") if code!="XAUUSD" else "PAXGUSDT"
     kl4=get_klines(sym,"4h")
     if len(kl4)<40: return {"error":True,"msg":f"No data {code}"}
     kl1=get_klines(sym,"1h")
     klD=get_klines(sym,"1d")
+    kl15=get_klines(sym,"15m") if use_15m_fallback else []
     closes4=[c["c"] for c in kl4]
     closes1=[c["c"] for c in kl1] if len(kl1)>=40 else closes4
     closesD=[c["c"] for c in klD] if len(klD)>=40 else closes4
@@ -165,6 +188,7 @@ def analyze_balanced(code):
     rsi=rsi_calc(closes4)
     sup=min([c["l"] for c in kl4[-20:]]); res=max([c["h"] for c in kl4[-20:]])
     atr=sum([c["h"]-c["l"] for c in kl4[-14:]])/14 if kl4 else live*0.01
+    adx=adx_calc(kl4)
 
     s1, t1 = get_mtf_trend(closes1)
     s4, t4 = get_mtf_trend(closes4)
@@ -173,6 +197,18 @@ def analyze_balanced(code):
     mtf_agree = (s1>0 and s4>0 and sD>0) or (s1<0 and s4<0 and sD<0)
 
     vol_score, vol_txt = volume_check(kl4)
+
+    # 15M fallback if low vol
+    scalp_mode=False
+    if vol_score<=-15 and len(kl15)>=40 and use_15m_fallback:
+        vol15, txt15 = volume_check(kl15)
+        if vol15>10:
+            scalp_mode=True
+            vol_score=vol15
+            vol_txt=f"15M {txt15} (4H low, using 15M ⚡)"
+            closes4=[c["c"] for c in kl15[-80:]]
+            live=closes4[-1]
+            src="15M SCALP MODE (4H low vol)"
 
     if live>e20>e50>e200: t_score=80
     elif live>e20>e50: t_score=50
@@ -185,36 +221,51 @@ def analyze_balanced(code):
     elif rsi<25: t_score+=30
     elif rsi<32: t_score+=15
     t_score=max(-100,min(100,t_score))
-    pats, c_score = detect_patterns_scored(kl4)
+    pats, c_score = detect_patterns_scored(kl4 if not scalp_mode else kl15)
 
-    final = mtf_score*0.40 + t_score*0.30 + c_score*0.20 + vol_score*0.10
-    is_fast = code in FAST_COINS
+    # LIQUIDITY
+    recent_high=max([c["h"] for c in kl4[-10:]]); recent_low=min([c["l"] for c in kl4[-10:]])
+    liquidity_txt=""
+    if live > recent_high*0.998: liquidity_txt=f"⚠️ Liquidity sweep above {fmt(recent_high)} - possible fakeout"
+    elif live < recent_low*1.002: liquidity_txt=f"⚠️ Liquidity sweep below {fmt(recent_low)} - possible fakeout"
+    else: liquidity_txt=f"Liq above {fmt(recent_high)} | below {fmt(recent_low)}"
+
+    final = mtf_score*0.35 + t_score*0.25 + c_score*0.20 + vol_score*0.10 + (adx-25)*0.3
+    is_fast = code in FAST_COINS or scalp_mode
 
     base_conf = 60 + abs(final)*0.32
     if mtf_agree: base_conf+=8
     if vol_score>10: base_conf+=4
-    conf = min(92, max(52, base_conf))
-    high_win = conf>=75 and mtf_agree
-    win_est = min(88, conf*0.96 + (5 if high_win else 0))
+    if adx>25: base_conf+=5
+    if adx<18: base_conf-=10
+    conf = min(93, max(50, base_conf))
+    high_win = conf>=75 and mtf_agree and adx>20
+    win_est = min(89, conf*0.96 + (5 if high_win else 0))
 
-    # === V2.1 FIXES FOR WIF BUG ===
-    pats_str = " ".join(pats)
-    if vol_score <= -15: # low vol block
-        high_win = False
-        conf = min(conf, 68)
-        win_est = min(win_est, 68)
-    if vol_score <= -25: # very low vol -79% case
-        high_win = False
-        conf = min(conf, 62)
-        win_est = min(win_est, 62)
-    if "3 GREEN" in pats_str and final < 0: # bullish candle but SELL signal
-        high_win = False
-        conf = max(52, conf-8)
-        win_est = max(50, win_est-8)
-    if "3 RED" in pats_str and final > 0: # bearish candle but BUY signal
-        high_win = False
-        conf = max(52, conf-8)
-        win_est = max(50, win_est-8)
+    # BLOCKS
+    pats_str=" ".join(pats)
+    if vol_score<=-15:
+        high_win=False; conf=min(conf,68); win_est=min(win_est,68)
+    if vol_score<=-25:
+        high_win=False; conf=min(conf,62); win_est=min(win_est,62)
+    if "3 GREEN" in pats_str and final<0:
+        high_win=False; conf=max(50,conf-8); win_est=max(50,win_est-8)
+    if "3 RED" in pats_str and final>0:
+        high_win=False; conf=max(50,conf-8); win_est=max(50,win_est-8)
+    if adx<18:
+        high_win=False; conf=min(conf,65); win_est=min(win_est,65)
+
+    # BTC CORRELATION
+    btc_txt=""
+    if code!="BTC" and btc_trend_score!=0:
+        if btc_trend_score<-30 and final>10: # BTC down but alt buy
+            btc_txt=f"⚠️ BTC DOWN ({btc_trend_score}) vs {code} BUY = CONFLICT - Risky"
+            high_win=False; conf=max(50,conf-10); win_est=max(50,win_est-10)
+        elif btc_trend_score>30 and final<-10:
+            btc_txt=f"⚠️ BTC UP ({btc_trend_score}) vs {code} SELL = CONFLICT - Risky"
+            high_win=False; conf=max(50,conf-10); win_est=max(50,win_est-10)
+        else:
+            btc_txt=f"✅ BTC {btc_trend_score:+.0f} aligns with {code}"
 
     if final>=5:
         direction="BUY"; entry=live
@@ -240,7 +291,30 @@ def analyze_balanced(code):
         lev="20x-25x (Low Vol)" if atr_pct<0.5 else "10x-15x (Normal 4H)" if atr_pct<1.2 else "5x-7x (High Vol 4H)"
 
     trend_txt = "STRONG UPTREND 🚀" if t_score>60 else "UPTREND 📈" if t_score>15 else "STRONG DOWNTREND 📉" if t_score<-60 else "DOWNTREND 📉" if t_score<-15 else "SIDEWAYS ↔️"
-    return {"error":False,"code":code,"price":live,"src":src,"trend":trend_txt,"e20":e20,"e50":e50,"e200":e200,"rsi":rsi,"sup":sup,"res":res,"atr":atr,"t_score":t_score,"c_score":c_score,"final":final,"pats":pats,"dir":direction,"entry":entry,"sl":sl,"sl_raw":sl_raw,"tp1":tp1,"tp2":tp2,"tp3":tp3,"lev":lev,"conf":conf,"kl":kl4,"is_fast":is_fast,"mtf_score":mtf_score,"mtf_agree":mtf_agree,"mtf_txt":f"1H {t1} | 4H {t4} | 1D {tD}","vol_txt":vol_txt,"vol_score":vol_score,"high_win":high_win,"win_est":win_est}
+    return {"error":False,"code":code,"price":live,"src":src,"trend":trend_txt,"e20":e20,"e50":e50,"e200":e200,"rsi":rsi,"sup":sup,"res":res,"atr":atr,"t_score":t_score,"c_score":c_score,"final":final,"pats":pats,"dir":direction,"entry":entry,"sl":sl,"sl_raw":sl_raw,"tp1":tp1,"tp2":tp2,"tp3":tp3,"lev":lev,"conf":conf,"kl":kl4 if not scalp_mode else kl15,"is_fast":is_fast,"mtf_score":mtf_score,"mtf_agree":mtf_agree,"mtf_txt":f"1H {t1} | 4H {t4} | 1D {tD}","vol_txt":vol_txt,"vol_score":vol_score,"high_win":high_win,"win_est":win_est,"adx":adx,"btc_txt":btc_txt,"liq_txt":liquidity_txt,"scalp_mode":scalp_mode}
+
+def get_btc_trend():
+    try:
+        kl=get_klines("BTCUSDT","4h")
+        if not kl: return 0
+        closes=[c["c"] for c in kl]
+        s,_=get_mtf_trend(closes)
+        return s
+    except: return 0
+
+def scan_best_coins():
+    btc_score=get_btc_trend()
+    results=[]
+    for code in CRYPTO.keys():
+        if code=="XAUUSD": continue
+        try:
+            r=analyze_balanced(code, btc_trend_score=btc_score, use_15m_fallback=True)
+            if not r.get("error"):
+                results.append(r)
+            time.sleep(0.25) # avoid rate limit
+        except: pass
+    results_sorted=sorted(results, key=lambda x: (x["win_est"], x["vol_score"]), reverse=True)
+    return results_sorted[:3], btc_score
 
 def generate_chart_image(symbol, direction, entry, sl, tp1, tp2, tp3, kl, sup, res, conf, trend_txt, is_fast, win_est, high_win):
     try:
@@ -290,7 +364,7 @@ def generate_chart_image(symbol, direction, entry, sl, tp1, tp2, tp3, kl, sup, r
         plt.tight_layout()
         buf=io.BytesIO()
         plt.savefig(buf, format='png', dpi=170)
-        buf.seek(0); plt.close(fig); buf.name=f"{symbol}_V2.png"
+        buf.seek(0); plt.close(fig); buf.name=f"{symbol}_V3.png"
         return buf
     except Exception as e:
         print(f"chart error {e} {traceback.format_exc()}")
@@ -316,6 +390,7 @@ def get_risk_calculator_text(entry, sl, tp1, tp2, tp3, lev_str, direction, is_fa
 
 def coins_kb():
     btns=[]
+    btns.append([InlineKeyboardButton("🔍 SCAN BEST 3 NOW - FIND HIGH WIN",callback_data="SCAN_BEST")])
     btns.append([InlineKeyboardButton("--- ⚡ FAST COINS - HIT <4H ---",callback_data="IGNORE_FAST")])
     fast=["SOL","DOGE","PEPE","BONK","WIF","BOME","FLOKI","SHIB","AVAX","SUI","ARB","OP","APT","TAO","NOT"]
     row=[]
@@ -336,17 +411,34 @@ def coins_kb():
     return InlineKeyboardMarkup(btns)
 
 async def start(u,c):
-    await u.message.reply_text("🚀 V2.1 80% FIXED + VOL BLOCK ✅\n\n⚡ FAST = TP close, hit <4H\n🐢 SLOW = SL +10% buffer safe\n✅ MTF 1H+4H+1D + Vol filter (low vol blocked)\n✅ Candle conflict blocked\n\nPick:",reply_markup=coins_kb())
+    await u.message.reply_text("🚀 V3 ULTIMATE ALL FEATURES ✅\n\n✅ AUTO SCANNER TOP 3\n✅ 15M SCALP when 4H low vol\n✅ BTC CORRELATION filter\n✅ ADX trend strength\n✅ LIQUIDITY SWEEP detector\n✅ Vol block fixed\n\nPress SCAN BEST 3 NOW 👇",reply_markup=coins_kb())
 
 async def btn_handler(u,c):
     q=u.callback_query; await q.answer(); d=q.data
     if d.startswith("IGNORE"): await q.answer("Pick coin boss 👇",show_alert=False); return
+    if d=="SCAN_BEST":
+        await q.edit_message_text("🔍 V3 Scanning ALL 32 coins... BTC filter + ADX + Vol + 15M fallback... ⏳ 30 secs...")
+        try:
+            top3, btc_score = scan_best_coins()
+            if not top3:
+                await q.message.reply_text("❌ No data, try again",reply_markup=coins_kb()); return
+            txt=f"🏆 V3 ULTIMATE TOP 3 BEST COINS NOW\nBTC Trend Score: {btc_score:+.0f}\n\n"
+            for i,r in enumerate(top3,1):
+                scalp = "⚡15M SCALP" if r["scalp_mode"] else "4H"
+                high = "🔥 HIGH WIN" if r["high_win"] else "⚠️ MEDIUM" if r["conf"]>=65 else "⛔ LOW"
+                txt+=f"{i}. {high} {r['code']} {r['dir']} {scalp}\n Win {r['win_est']:.0f}% | Conf {r['conf']:.0f}% | ADX {r['adx']:.0f}\n Vol: {r['vol_txt']}\n MTF: {r['mtf_txt']}\n Entry {fmt(r['entry'])} | SL {fmt(r['sl'])} | TP1 {fmt(r['tp1'])}\n {r['btc_txt']}\n {r['liq_txt']}\n\n"
+            txt+="Press any coin to see full chart 👇"
+            await q.message.reply_text(txt,reply_markup=coins_kb())
+        except Exception as e:
+            print(traceback.format_exc())
+            await q.message.reply_text(f"❌ Scan error {e}",reply_markup=coins_kb())
+        return
     if not d.startswith("C_"): return
     code=d[2:]; now=time.time()
     if q.from_user.id in LAST_CLICK and now-LAST_CLICK[q.from_user.id]<1.5:
         await q.answer("⏳ Wait small boss!",show_alert=False); return
     LAST_CLICK[q.from_user.id]=now
-    try: await q.edit_message_text(f"📊 V2.1 Analyzing {code} MTF + Vol filter... ⏳")
+    try: await q.edit_message_text(f"📊 V3 Analyzing {code} with BTC + ADX + Liq + 15M... ⏳")
     except: pass
     try: await run(q,code,c)
     except Exception as e:
@@ -357,35 +449,40 @@ async def btn_handler(u,c):
 async def txt_handler(u,c):
     s=clean((u.message.text or "").strip())
     if s in CRYPTO or s=="XAUUSD":
-        await u.message.reply_text(f"📊 V2.1 {'FAST ⚡' if s in FAST_COINS else 'SLOW 🐢'} Analysis for {s}...")
+        await u.message.reply_text(f"📊 V3 {'FAST ⚡' if s in FAST_COINS else 'SLOW 🐢'} Analysis for {s}...")
         await run(u,s,c)
 
 async def run(upd, code, context):
     try:
-        r=analyze_balanced(code)
+        btc_score=get_btc_trend()
+        r=analyze_balanced(code, btc_trend_score=btc_score, use_15m_fallback=True)
         if r.get("error"):
             await upd.message.reply_text(f"⚠️ {r['msg']}",reply_markup=coins_kb()); return
         pats_txt="\n".join([f"• {p}" for p in r["pats"]])
         risk_txt=get_risk_calculator_text(r["entry"], r["sl"], r["tp1"], r["tp2"], r["tp3"], r["lev"], r["dir"], r["is_fast"])
         if r["high_win"]:
-            status = "🔥 HIGH WIN 80%+ - TRADE THIS ✅"
+            status="🔥 HIGH WIN 80%+ - TRADE THIS ✅"
         elif r["conf"]>=65:
-            status = "⚠️ MEDIUM 65-74% - Trade small / Wait Vol"
+            status="⚠️ MEDIUM 65-74% - Trade small / Wait Vol"
         else:
-            status = "⛔ LOW CONF <65% - SKIP - NO TRADE"
-        if r["vol_score"] <= -15:
-            status += "\n⚠️ VOL LOW - RISKY TO ENTER NOW"
-
-        msg=f"""{"🟢" if r['dir']=="BUY" else "🔴"} {r['code']} {r['dir']} SIGNAL - V2.1 FIXED {"⚡FAST" if r['is_fast'] else "🐢SLOW"}
+            status="⛔ LOW CONF <65% - SKIP - NO TRADE"
+        if r["vol_score"]<=-15:
+            status+="\n⚠️ VOL LOW - RISKY"
+        if r["scalp_mode"]:
+            status+="\n⚡ 15M SCALP MODE ACTIVE (4H low vol)"
+        msg=f"""{"🟢" if r['dir']=="BUY" else "🔴"} {r['code']} {r['dir']} SIGNAL - V3 ULTIMATE {"⚡FAST" if r['is_fast'] else "🐢SLOW"} {"+15M" if r['scalp_mode'] else ""}
 
 {status}
-Win Est: {r['win_est']:.0f}% | Conf: {r['conf']:.0f}%
+Win Est: {r['win_est']:.0f}% | Conf: {r['conf']:.0f}% | ADX: {r['adx']:.0f}
 
 💰 Price: {fmt(r['price'])} | {r['src']}
 ⏰ MTF FUTURE EYE:
 {r['mtf_txt']}
 Agree: {'✅ ALL ALIGN' if r['mtf_agree'] else '⚠️ CONFLICT'}
 Vol: {r['vol_txt']}
+ADX: {r['adx']:.0f} {'✅ Strong Trend' if r['adx']>25 else '⚠️ Weak/Sideways' if r['adx']<20 else 'Normal'}
+BTC Filter: {r['btc_txt'] or 'BTC Neutral'}
+Liq: {r['liq_txt']}
 
 📊 4H:
 Trend: {r['trend']} ({r['t_score']:.0f})
@@ -396,7 +493,7 @@ Sup {fmt(r['sup'])} | Res {fmt(r['res'])}
 🕯️ CANDLE: {r['c_score']:.0f}
 {pats_txt}
 
-💵 ENTRY - {'FAST CLOSE' if r['is_fast'] else 'SL +10% BUFFER'}:
+💵 ENTRY:
 Dir: {r['dir']} | Lev: {r['lev']}
 Entry: {fmt(r['entry'])}
 🛑 SL: {fmt(r['sl'])} (old {fmt(r['sl_raw'])})
@@ -423,7 +520,7 @@ def run_bot():
     a.add_handler(CommandHandler("coins",start))
     a.add_handler(CallbackQueryHandler(btn_handler))
     a.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,txt_handler))
-    print("Bot V2.1 FIXED starting..."); a.run_polling(drop_pending_updates=True)
+    print("Bot V3 ULTIMATE starting..."); a.run_polling(drop_pending_updates=True)
 
 if __name__=="__main__":
     threading.Thread(target=run_flask,daemon=True).start()
