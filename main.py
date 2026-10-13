@@ -19,7 +19,7 @@ LAST_CLICK={}
 CRYPTO={"BTC":"BTCUSDT","ETH":"ETHUSDT","BNB":"BNBUSDT","SOL":"SOLUSDT","XRP":"XRPUSDT","DOGE":"DOGEUSDT","ADA":"ADAUSDT","AVAX":"AVAXUSDT","LINK":"LINKUSDT","TRX":"TRXUSDT","DOT":"DOTUSDT","MATIC":"MATICUSDT","LTC":"LTCUSDT","BCH":"BCHUSDT","UNI":"UNIUSDT","ATOM":"ATOMUSDT","ETC":"ETCUSDT","FIL":"FILUSDT","PEPE":"PEPEUSDT","BONK":"BONKUSDT","SHIB":"SHIBUSDT","FLOKI":"FLOKIUSDT","WIF":"WIFUSDT","BOME":"BOMEUSDT","PAXG":"PAXGUSDT"}
 
 @app.get("/")
-def home(): return "SKELLY 4H PRO CHART + SUP/RES + CONF OK",200
+def home(): return "SKELLY 4H PRO CHART + SL 10% BUFFER OK",200
 @app.get("/health")
 def health(): return {"ok":True},200
 
@@ -155,10 +155,25 @@ def analyze_balanced(code):
     t_score=max(-100,min(100,t_score))
     pats, c_score = detect_patterns_scored(kl)
     final = (t_score*0.5 + c_score*0.5)
+
+    # === FIXED: SL +10% FARTHER FOR BETTER RESULTS ===
     if final>=5:
-        direction="BUY"; entry=live; sl=sup-atr*0.5; risk=max(entry-sl,atr*0.6); tp1=entry+risk*1.5; tp2=entry+risk*3.0; tp3=entry+risk*5.0
+        direction="BUY"
+        entry=live
+        sl_raw=sup-atr*0.5
+        risk_raw=max(entry-sl_raw, atr*0.6)
+        sl = entry - (risk_raw * 1.10) # +10% farther
+        risk = risk_raw * 1.10
+        tp1=entry+risk*1.5; tp2=entry+risk*3.0; tp3=entry+risk*5.0
     else:
-        direction="SELL"; entry=live; sl=res+atr*0.5; risk=max(sl-entry,atr*0.6); tp1=entry-risk*1.5; tp2=entry-risk*3.0; tp3=entry-risk*5.0
+        direction="SELL"
+        entry=live
+        sl_raw=res+atr*0.5
+        risk_raw=max(sl_raw-entry, atr*0.6)
+        sl = entry + (risk_raw * 1.10) # +10% farther
+        risk = risk_raw * 1.10
+        tp1=entry-risk*1.5; tp2=entry-risk*3.0; tp3=entry-risk*5.0
+
     atr_pct=atr/live*100 if live!=0 else 1
     if atr_pct<0.5: lev="20x-25x (Low Vol)"
     elif atr_pct<1.2: lev="10x-15x (Normal 4H)"
@@ -166,7 +181,7 @@ def analyze_balanced(code):
     conf = 60 + abs(final)*0.35
     conf = min(92, max(62, conf))
     trend_txt = "STRONG UPTREND 🚀" if t_score>60 else "UPTREND 📈" if t_score>15 else "STRONG DOWNTREND 📉" if t_score<-60 else "DOWNTREND 📉" if t_score<-15 else "SIDEWAYS ↔️"
-    return {"error":False,"code":code,"price":live,"src":src,"trend":trend_txt,"e20":e20,"e50":e50,"e200":e200,"rsi":rsi,"sup":sup,"res":res,"atr":atr,"t_score":t_score,"c_score":c_score,"final":final,"pats":pats,"dir":direction,"entry":entry,"sl":sl,"tp1":tp1,"tp2":tp2,"tp3":tp3,"lev":lev,"conf":conf,"kl":kl}
+    return {"error":False,"code":code,"price":live,"src":src,"trend":trend_txt,"e20":e20,"e50":e50,"e200":e200,"rsi":rsi,"sup":sup,"res":res,"atr":atr,"t_score":t_score,"c_score":c_score,"final":final,"pats":pats,"dir":direction,"entry":entry,"sl":sl,"sl_raw":sl_raw,"tp1":tp1,"tp2":tp2,"tp3":tp3,"lev":lev,"conf":conf,"kl":kl}
 
 def generate_chart_image(symbol, direction, entry, sl, tp1, tp2, tp3, kl, sup, res, conf, trend_txt):
     try:
@@ -176,19 +191,37 @@ def generate_chart_image(symbol, direction, entry, sl, tp1, tp2, tp3, kl, sup, r
         e50_s = ema_series(closes,50)[-80:]
         e200_s = ema_series(closes,200)[-80:]
         fig, ax = plt.subplots(figsize=(12,6.5), facecolor='white')
+
+        # Candles
         for i, c in enumerate(data):
             color = '#26A69A' if c["c"] >= c["o"] else '#EF5350'
-            ax.plot([i, i], [c["l"], c["h"]], color=color, linewidth=0.8)
+            ax.plot([i, i], [c["l"], c["h"]], color=color, linewidth=0.8, zorder=1)
             body_h = abs(c["c"]-c["o"])
             body_y = min(c["o"], c["c"])
             if body_h < (max([x["h"]-x["l"] for x in data]) * 0.008):
                 body_h = max([x["h"]-x["l"] for x in data]) * 0.008
-            rect = Rectangle((i-0.35, body_y), 0.7, body_h if body_h>0 else 0.001, facecolor=color, edgecolor=color)
+            rect = Rectangle((i-0.35, body_y), 0.7, body_h if body_h>0 else 0.001, facecolor=color, edgecolor=color, zorder=2)
             ax.add_patch(rect)
-        ax.plot(e20_s, color='#FFC107', linewidth=1.1, label='EMA20')
-        ax.plot(e50_s, color='#2962FF', linewidth=1.1, label='EMA50')
-        ax.plot(e200_s, color='#9C27B0', linewidth=1.1, label='EMA200')
+
+        ax.plot(e20_s, color='#FFC107', linewidth=1.1, label='EMA20', alpha=0.8)
+        ax.plot(e50_s, color='#2962FF', linewidth=1.1, label='EMA50', alpha=0.8)
+        ax.plot(e200_s, color='#9C27B0', linewidth=1.1, label='EMA200', alpha=0.8)
+
         last_x = len(data)-1
+        box_left = len(data) - 19
+        box_w = 18
+
+        # === TRADINGVIEW BOX STYLE LIKE YOUR SCREENSHOT ===
+        if direction=="BUY":
+            ax.add_patch(Rectangle((box_left, entry), box_w, abs(tp3-entry), facecolor='#26A69A', alpha=0.15, zorder=3))
+            ax.add_patch(Rectangle((box_left, entry), box_w, abs(tp1-entry), facecolor='#26A69A', alpha=0.32, zorder=3))
+            ax.add_patch(Rectangle((box_left, sl), box_w, abs(entry-sl), facecolor='#EF5350', alpha=0.30, zorder=3))
+        else:
+            ax.add_patch(Rectangle((box_left, tp3), box_w, abs(entry-tp3), facecolor='#26A69A', alpha=0.15, zorder=3))
+            ax.add_patch(Rectangle((box_left, tp1), box_w, abs(entry-tp1), facecolor='#26A69A', alpha=0.32, zorder=3))
+            ax.add_patch(Rectangle((box_left, entry), box_w, abs(sl-entry), facecolor='#EF5350', alpha=0.30, zorder=3))
+
+        # Support/Resistance + ENTRY/SL/TP lines - ALL SHOWING
         ax.axhspan(sup*0.998, sup*1.002, color='green', alpha=0.08)
         ax.axhspan(res*0.998, res*1.002, color='red', alpha=0.08)
         ax.axhline(sup, color='#26A69A', linewidth=0.9, linestyle=':', alpha=0.7)
@@ -198,21 +231,24 @@ def generate_chart_image(symbol, direction, entry, sl, tp1, tp2, tp3, kl, sup, r
         ax.axhline(tp1, color='#2E7D32', linewidth=1.2, linestyle='--')
         ax.axhline(tp2, color='#2E7D32', linewidth=1.2, linestyle='-.')
         ax.axhline(tp3, color='#1B5E20', linewidth=1.5)
-        ax.text(last_x+0.8, entry, f' ENTRY {entry:.4f} ', backgroundcolor='#2962FF', color='white', weight='bold', fontsize=8, va='center')
-        ax.text(last_x+0.8, sl, f' SL {sl:.4f} ', backgroundcolor='#D32F2F', color='white', fontsize=7, va='center')
-        ax.text(last_x+0.8, tp1, f' TP1 {tp1:.4f} ', backgroundcolor='#2E7D32', color='white', fontsize=7, va='center')
-        ax.text(last_x+0.8, tp2, f' TP2 {tp2:.4f} ', backgroundcolor='#2E7D32', color='white', fontsize=7, va='center')
-        ax.text(last_x+0.8, tp3, f' TP3 {tp3:.4f} ', backgroundcolor='#1B5E20', color='white', fontsize=7, va='center')
+
+        ax.text(last_x+0.8, entry, f' ENTRY {entry:.4f} ', backgroundcolor='#2962FF', color='white', weight='bold', fontsize=8, va='center', zorder=5)
+        ax.text(last_x+0.8, sl, f' SL +10% {sl:.4f} ', backgroundcolor='#D32F2F', color='white', fontsize=7, va='center', zorder=5)
+        ax.text(last_x+0.8, tp1, f' TP1 {tp1:.4f} ', backgroundcolor='#2E7D32', color='white', fontsize=7, va='center', zorder=5)
+        ax.text(last_x+0.8, tp2, f' TP2 {tp2:.4f} ', backgroundcolor='#2E7D32', color='white', fontsize=7, va='center', zorder=5)
+        ax.text(last_x+0.8, tp3, f' TP3 {tp3:.4f} ', backgroundcolor='#1B5E20', color='white', fontsize=7, va='center', zorder=5)
         ax.text(1, sup, f' SUP {sup:.4f} ', fontsize=6, backgroundcolor='#26A69A', color='white', va='center')
         ax.text(1, res, f' RES {res:.4f} ', fontsize=6, backgroundcolor='#EF5350', color='white', va='center')
+
         x_arrow = last_x-6
         arrow_color = '#26A69A' if direction=="BUY" else '#EF5350'
         ax.annotate('', xy=(x_arrow+1, tp3), xytext=(x_arrow, entry), arrowprops=dict(facecolor=arrow_color, edgecolor=arrow_color, width=3, headwidth=12, headlength=10))
+
         pair = f"{symbol}USDT" if symbol!="XAUUSD" else "XAUUSD"
         lev_text = "15x Safe" if symbol!="XAUUSD" else "20x Safe"
         title_color = '#26A69A' if direction=="BUY" else '#EF5350'
-        ax.set_title(f"{pair} | {direction} | {trend_txt} | Conf {conf:.0f}% | EMA20/50/200 | Lev {lev_text} | 4H", loc='left', fontsize=11, fontweight='bold', color=title_color)
-        ax.text(0.02, 0.97, f"CONFIDENCE: {conf:.0f}%\n{trend_txt}\nSUP {sup:.4f} | RES {res:.4f}\n{pair} 4H PRO", transform=ax.transAxes, fontsize=9, fontweight='bold', bbox=dict(boxstyle="round,pad=0.4", facecolor="white", edgecolor=title_color, alpha=0.95), va='top', color=title_color)
+        ax.set_title(f"{pair} | {direction} | {trend_txt} | Conf {conf:.0f}% | SL+10% Buffer | TP1/2/3 | 4H", loc='left', fontsize=11, fontweight='bold', color=title_color)
+        ax.text(0.02, 0.97, f"CONFIDENCE: {conf:.0f}%\n{trend_txt}\nSL +10% Buffer\n{pair} 4H PRO", transform=ax.transAxes, fontsize=9, fontweight='bold', bbox=dict(boxstyle="round,pad=0.4", facecolor="white", edgecolor=title_color, alpha=0.95), va='top', color=title_color)
         ax.legend(loc='upper left', fontsize=7, bbox_to_anchor=(0.18,0.96))
         ax.grid(True, alpha=0.15)
         plt.tight_layout()
@@ -242,12 +278,13 @@ def get_risk_calculator_text(entry, sl, tp1, tp2, tp3, lev_str, direction):
         def m(pct,bal): return bal*pct/100
         return f"""
 
-💵 RISK CALCULATOR (Lev {lev_num}x) - 4H:
+💵 RISK CALCULATOR (Lev {lev_num}x) - SL +10% BUFFER:
+Original risk +10% added for safety
 ⛔ SL {sl_pct:.2f}%: $10 -> ${m(sl_pct,10):.2f} | $100 -> ${m(sl_pct,100):.2f} | $1000 -> ${m(sl_pct,1000):.2f}
-🎯 TP1 +{abs(tp1_pct):.2f}% (4H): $100 -> +${abs(m(tp1_pct,100)):.2f}
-🎯 TP2 +{abs(tp2_pct):.2f}% (8-12H): $100 -> +${abs(m(tp2_pct,100)):.2f}
+🎯 TP1 +{abs(tp1_pct):.2f}%: $100 -> +${abs(m(tp1_pct,100)):.2f}
+🎯 TP2 +{abs(tp2_pct):.2f}%: $100 -> +${abs(m(tp2_pct,100)):.2f}
 🚀 TP3 +{abs(tp3_pct):.2f}% MOON: $100 -> +${abs(m(tp3_pct,100)):.2f}
-⚠️ Use 1-2% risk per trade!
+✅ SL now 10% farther - won't hit fast!
 """
     except:
         return ""
@@ -262,7 +299,7 @@ def coins_kb():
     return InlineKeyboardMarkup(btns)
 
 async def start(u,c):
-    await u.message.reply_text("✅ 4H PRO CHART + SUP/RES + CONF ✅\n\n🕯️ Candle\n📈 EMA\n💰 ENTRY/SL/TP1/2/3\n📦 SUP/RES\n🎯 Confidence on image\n\nTap:",reply_markup=coins_kb())
+    await u.message.reply_text("✅ 4H PRO CHART + SL 10% BUFFER + TP1/2/3 ✅\n\n🕯️ Candle\n📈 EMA\n💰 ENTRY/SL+10%/TP1/2/3 on image\n🟩 Green box TP | 🟥 Red box SL\n\nTap:",reply_markup=coins_kb())
 
 async def btn_handler(u,c):
     q=u.callback_query
@@ -277,7 +314,7 @@ async def btn_handler(u,c):
         return
     LAST_CLICK[user_id]=now
     try:
-        await q.edit_message_text(f"📊 Analyzing {code} 4H PRO... ⏳")
+        await q.edit_message_text(f"📊 Analyzing {code} 4H PRO SL+10%... ⏳")
     except: pass
     try:
         await run(q,code,c)
@@ -290,7 +327,7 @@ async def btn_handler(u,c):
 async def txt_handler(u,c):
     s=clean((u.message.text or "").strip())
     if s in CRYPTO or s=="XAUUSD":
-        await u.message.reply_text(f"📊 4H PRO Analysis for {s}...")
+        await u.message.reply_text(f"📊 4H PRO SL+10% Analysis for {s}...")
         await run(u,s,c)
 
 async def run(upd, code, context):
@@ -301,7 +338,7 @@ async def run(upd, code, context):
             return
         pats_txt="\n".join([f"• {p}" for p in r["pats"]])
         risk_txt=get_risk_calculator_text(r["entry"], r["sl"], r["tp1"], r["tp2"], r["tp3"], r["lev"], r["dir"])
-        msg=f"""{"🟢" if r['dir']=="BUY" else "🔴"} {r['code']} {r['dir']} SIGNAL - 4H TIMEFRAME
+        msg=f"""{"🟢" if r['dir']=="BUY" else "🔴"} {r['code']} {r['dir']} SIGNAL - 4H SL+10%
 
 💰 Price: {fmt(r['price'])} | {r['src']}
 ⏰ TF: 4 HOUR | Confidence: {r['conf']:.0f}%
@@ -315,10 +352,10 @@ Support {fmt(r['sup'])} | Resistance {fmt(r['res'])}
 🕯️ CANDLE: {r['c_score']:.0f}/100
 {pats_txt}
 
-💵 ENTRY (4H):
+💵 ENTRY (4H) - SL +10% BUFFER:
 Dir: {r['dir']} | Lev: {r['lev']}
 Entry: {fmt(r['entry'])}
-🛑 SL: {fmt(r['sl'])}
+🛑 SL (+10% farther): {fmt(r['sl'])} | Old was {fmt(r['sl_raw'])}
 🎯 TP1: {fmt(r['tp1'])}
 🎯 TP2: {fmt(r['tp2'])}
 🎯 TP3: {fmt(r['tp3'])}
@@ -350,7 +387,7 @@ def run_bot():
     a.add_handler(CommandHandler("coins",start))
     a.add_handler(CallbackQueryHandler(btn_handler))
     a.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,txt_handler))
-    print("Bot starting 4H PRO SUP/RES CONF...")
+    print("Bot starting 4H PRO SL 10% BUFFER...")
     a.run_polling(drop_pending_updates=True)
 
 if __name__=="__main__":
