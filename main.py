@@ -20,7 +20,7 @@ CRYPTO={"BTC":"BTCUSDT","ETH":"ETHUSDT","BNB":"BNBUSDT","SOL":"SOLUSDT","XRP":"X
 FAST_COINS={"PEPE","BONK","WIF","BOME","FLOKI","SHIB","DOGE","SOL","AVAX","SUI","ARB","OP","APT","TAO","NOT"}
 
 @app.get("/")
-def home(): return "SKELLY V2 PRO MAX 80% OK",200
+def home(): return "SKELLY V2.1 80% FIXED VOL BLOCK OK",200
 @app.get("/health")
 def health(): return {"ok":True},200
 
@@ -109,7 +109,8 @@ def volume_check(kl):
     pct=(curr-avg)/avg*100 if avg>0 else 0
     if pct>40: return 25,f"VOL +{pct:.0f}% SPIKE 🔥"
     if pct>15: return 10,f"Vol +{pct:.0f}% ✅"
-    if pct<-30: return -15,f"Vol low {pct:.0f}% ⚠️"
+    if pct<-50: return -25,f"Vol low {pct:.0f}% ❌ NO TRADE"
+    if pct<-25: return -15,f"Vol low {pct:.0f}% ⚠️ LOW"
     return 0,f"Vol {pct:.0f}% normal"
 
 def detect_patterns_scored(kl):
@@ -196,6 +197,25 @@ def analyze_balanced(code):
     high_win = conf>=75 and mtf_agree
     win_est = min(88, conf*0.96 + (5 if high_win else 0))
 
+    # === V2.1 FIXES FOR WIF BUG ===
+    pats_str = " ".join(pats)
+    if vol_score <= -15: # low vol block
+        high_win = False
+        conf = min(conf, 68)
+        win_est = min(win_est, 68)
+    if vol_score <= -25: # very low vol -79% case
+        high_win = False
+        conf = min(conf, 62)
+        win_est = min(win_est, 62)
+    if "3 GREEN" in pats_str and final < 0: # bullish candle but SELL signal
+        high_win = False
+        conf = max(52, conf-8)
+        win_est = max(50, win_est-8)
+    if "3 RED" in pats_str and final > 0: # bearish candle but BUY signal
+        high_win = False
+        conf = max(52, conf-8)
+        win_est = max(50, win_est-8)
+
     if final>=5:
         direction="BUY"; entry=live
         if is_fast:
@@ -220,7 +240,7 @@ def analyze_balanced(code):
         lev="20x-25x (Low Vol)" if atr_pct<0.5 else "10x-15x (Normal 4H)" if atr_pct<1.2 else "5x-7x (High Vol 4H)"
 
     trend_txt = "STRONG UPTREND 🚀" if t_score>60 else "UPTREND 📈" if t_score>15 else "STRONG DOWNTREND 📉" if t_score<-60 else "DOWNTREND 📉" if t_score<-15 else "SIDEWAYS ↔️"
-    return {"error":False,"code":code,"price":live,"src":src,"trend":trend_txt,"e20":e20,"e50":e50,"e200":e200,"rsi":rsi,"sup":sup,"res":res,"atr":atr,"t_score":t_score,"c_score":c_score,"final":final,"pats":pats,"dir":direction,"entry":entry,"sl":sl,"sl_raw":sl_raw,"tp1":tp1,"tp2":tp2,"tp3":tp3,"lev":lev,"conf":conf,"kl":kl4,"is_fast":is_fast,"mtf_score":mtf_score,"mtf_agree":mtf_agree,"mtf_txt":f"1H {t1} | 4H {t4} | 1D {tD}","vol_txt":vol_txt,"high_win":high_win,"win_est":win_est}
+    return {"error":False,"code":code,"price":live,"src":src,"trend":trend_txt,"e20":e20,"e50":e50,"e200":e200,"rsi":rsi,"sup":sup,"res":res,"atr":atr,"t_score":t_score,"c_score":c_score,"final":final,"pats":pats,"dir":direction,"entry":entry,"sl":sl,"sl_raw":sl_raw,"tp1":tp1,"tp2":tp2,"tp3":tp3,"lev":lev,"conf":conf,"kl":kl4,"is_fast":is_fast,"mtf_score":mtf_score,"mtf_agree":mtf_agree,"mtf_txt":f"1H {t1} | 4H {t4} | 1D {tD}","vol_txt":vol_txt,"vol_score":vol_score,"high_win":high_win,"win_est":win_est}
 
 def generate_chart_image(symbol, direction, entry, sl, tp1, tp2, tp3, kl, sup, res, conf, trend_txt, is_fast, win_est, high_win):
     try:
@@ -316,7 +336,7 @@ def coins_kb():
     return InlineKeyboardMarkup(btns)
 
 async def start(u,c):
-    await u.message.reply_text("🚀 V2 PRO MAX 80% + FAST/SLOW ✅\n\n⚡ FAST = TP close, hit <4H\n🐢 SLOW = SL +10% buffer safe\n✅ MTF 1H+4H+1D + Volume filter\n\nPick:",reply_markup=coins_kb())
+    await u.message.reply_text("🚀 V2.1 80% FIXED + VOL BLOCK ✅\n\n⚡ FAST = TP close, hit <4H\n🐢 SLOW = SL +10% buffer safe\n✅ MTF 1H+4H+1D + Vol filter (low vol blocked)\n✅ Candle conflict blocked\n\nPick:",reply_markup=coins_kb())
 
 async def btn_handler(u,c):
     q=u.callback_query; await q.answer(); d=q.data
@@ -326,7 +346,7 @@ async def btn_handler(u,c):
     if q.from_user.id in LAST_CLICK and now-LAST_CLICK[q.from_user.id]<1.5:
         await q.answer("⏳ Wait small boss!",show_alert=False); return
     LAST_CLICK[q.from_user.id]=now
-    try: await q.edit_message_text(f"📊 V2 Analyzing {code} MTF 1H/4H/1D... ⏳")
+    try: await q.edit_message_text(f"📊 V2.1 Analyzing {code} MTF + Vol filter... ⏳")
     except: pass
     try: await run(q,code,c)
     except Exception as e:
@@ -337,7 +357,7 @@ async def btn_handler(u,c):
 async def txt_handler(u,c):
     s=clean((u.message.text or "").strip())
     if s in CRYPTO or s=="XAUUSD":
-        await u.message.reply_text(f"📊 V2 {'FAST ⚡' if s in FAST_COINS else 'SLOW 🐢'} Analysis for {s}...")
+        await u.message.reply_text(f"📊 V2.1 {'FAST ⚡' if s in FAST_COINS else 'SLOW 🐢'} Analysis for {s}...")
         await run(u,s,c)
 
 async def run(upd, code, context):
@@ -347,8 +367,16 @@ async def run(upd, code, context):
             await upd.message.reply_text(f"⚠️ {r['msg']}",reply_markup=coins_kb()); return
         pats_txt="\n".join([f"• {p}" for p in r["pats"]])
         risk_txt=get_risk_calculator_text(r["entry"], r["sl"], r["tp1"], r["tp2"], r["tp3"], r["lev"], r["dir"], r["is_fast"])
-        status = "🔥 HIGH WIN 80%+ - TRADE THIS ✅" if r["high_win"] else "⚠️ MEDIUM 65-74% - Trade small" if r["conf"]>=65 else "⛔ LOW CONF <65% - SKIP"
-        msg=f"""{"🟢" if r['dir']=="BUY" else "🔴"} {r['code']} {r['dir']} SIGNAL - V2 PRO MAX {"⚡FAST" if r['is_fast'] else "🐢SLOW"}
+        if r["high_win"]:
+            status = "🔥 HIGH WIN 80%+ - TRADE THIS ✅"
+        elif r["conf"]>=65:
+            status = "⚠️ MEDIUM 65-74% - Trade small / Wait Vol"
+        else:
+            status = "⛔ LOW CONF <65% - SKIP - NO TRADE"
+        if r["vol_score"] <= -15:
+            status += "\n⚠️ VOL LOW - RISKY TO ENTER NOW"
+
+        msg=f"""{"🟢" if r['dir']=="BUY" else "🔴"} {r['code']} {r['dir']} SIGNAL - V2.1 FIXED {"⚡FAST" if r['is_fast'] else "🐢SLOW"}
 
 {status}
 Win Est: {r['win_est']:.0f}% | Conf: {r['conf']:.0f}%
@@ -395,7 +423,7 @@ def run_bot():
     a.add_handler(CommandHandler("coins",start))
     a.add_handler(CallbackQueryHandler(btn_handler))
     a.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,txt_handler))
-    print("Bot V2 PRO MAX starting..."); a.run_polling(drop_pending_updates=True)
+    print("Bot V2.1 FIXED starting..."); a.run_polling(drop_pending_updates=True)
 
 if __name__=="__main__":
     threading.Thread(target=run_flask,daemon=True).start()
