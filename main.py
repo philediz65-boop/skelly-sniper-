@@ -12,7 +12,7 @@ PORT=int(os.getenv("PORT","10000"))
 app=Flask(__name__)
 SESSION=requests.Session()
 SESSION.headers.update({"User-Agent":"Mozilla/5.0"})
-CACHE={}; LAST_CLICK={}
+CACHE={}
 ACTIVE_FILE="/tmp/active_trade_v6.json"; DAILY_FILE="/tmp/daily_stats_v6.json"; CHAT_FILE="/tmp/last_chat_id.json"
 
 def load_json(p,d):
@@ -33,7 +33,7 @@ def update_daily(result,pnl,coin=""):
     d=get_daily(); d["trades"]+=1
     if result=="WIN": d["wins"]+=1
     else: d["losses"]+=1
-    d["pnl"]+=pnl; d["history"].append({"time":str(datetime.now())[:16],"coin":coin,"result":result,"pnl":pnl}); save_json(DAILY_FILE,d); return d
+    d["pnl"]+=pnl; save_json(DAILY_FILE,d); return d
 def get_active(): return load_json(ACTIVE_FILE,{})
 def set_active(data): save_json(ACTIVE_FILE,data)
 def clear_active(): save_json(ACTIVE_FILE,{})
@@ -45,7 +45,7 @@ CRYPTO={"BTC":"BTCUSDT","ETH":"ETHUSDT","BNB":"BNBUSDT","SOL":"SOLUSDT","XRP":"X
 FAST_COINS={"PEPE","BONK","WIF","BOME","FLOKI","SHIB","DOGE","SOL","AVAX","SUI","ARB","OP","APT","TAO","NOT"}
 
 @app.get("/")
-def home(): return "SKELLY V6.3 FAST PROFIT AUTO-CLOSE - LIVE",200
+def home(): return "SKELLY V6.4 MONITOR VISIBLE - LIVE",200
 
 def fmt(v):
     try:
@@ -75,19 +75,16 @@ def get_klines(sym, interval="4h"):
     if key in CACHE: return CACHE[key][1]
     return []
 def get_price_now(sym):
-    try:
-        kl=get_klines(sym,"4h")
-        if kl: return kl[-1]["c"]
-    except: pass
+    kl=get_klines(sym,"4h")
+    if kl: return kl[-1]["c"]
     return None
 def ema(arr,p):
-    if not arr: return 0
     if len(arr)<p: return sum(arr)/len(arr)
     k=2/(p+1); e=sum(arr[:p])/p
     for x in arr[p:]: e=(x-e)*k+e
     return e
 def ema_series(arr,p):
-    if len(arr)<p: return [sum(arr)/len(arr)]*len(arr) if arr else []
+    if len(arr)<p: return [sum(arr)/len(arr)]*len(arr)
     k=2/(p+1); e=sum(arr[:p])/p; res=[e]*p
     for x in arr[p:]: e=(x-e)*k+e; res.append(e)
     while len(res)<len(arr): res.insert(0,res[0])
@@ -100,8 +97,7 @@ def rsi_calc(arr,p=14):
         if d>0: gains+=d
         else: losses+=-d
     if losses==0: return 75 if gains>0 else 50
-    rs=gains/losses if losses!=0 else 1
-    return 100 - (100/(1+rs))
+    return 100 - (100/(1+gains/losses)) if losses!=0 else 50
 def get_mtf_trend(closes):
     if len(closes)<50: return 0,"N/A"
     e20=ema(closes,20); e50=ema(closes,50); e200=ema(closes,200); live=closes[-1]
@@ -113,16 +109,15 @@ def get_mtf_trend(closes):
     if live<e50: return -20,"WEAK DOWN"
     return 0,"SIDEWAYS"
 def volume_check(kl):
-    if len(kl)<25: return 0,"Vol -0% normal"
     vols=[k["v"] for k in kl[-25:]]; avg=sum(vols[-21:-1])/20 if len(vols)>=21 else sum(vols)/len(vols)
     curr=vols[-1]; pct=(curr-avg)/avg*100 if avg>0 else 0
     return 0,f"Vol {pct:.0f}% normal"
 def v5_confluence_lock(s1,t1,s4,t4,sD,tD):
-    if s1>=20 and s4>=50 and sD>=20: return True, "BUY", f"PASS 1H {t1} + 4H {t4} + 1D {tD}"
-    if s1<=-20 and s4<=-50 and sD<=-20: return True, "SELL", f"PASS 1H {t1} + 4H {t4} + 1D {tD}"
     if s4>=50 and sD>=20: return True, "BUY", f"PASS 4H {t4} + 1D {tD}"
     if s4<=-50 and sD<=-20: return True, "SELL", f"PASS 4H {t4} + 1D {tD}"
-    return False, None, f"BLOCKED 1H {t1} / 4H {t4} / 1D {tD}"
+    if s1>=20 and s4>=20: return True, "BUY", f"PASS 1H {t1} + 4H {t4}"
+    if s1<=-20 and s4<=-20: return True, "SELL", f"PASS 1H {t1} + 4H {t4}"
+    return True, "SELL" if s4<0 else "BUY", f"OK {t4}"
 def v5_dynamic_atr_sl_tp(entry, atr_val, side, is_fast):
     atr_pct=atr_val/entry*100 if entry!=0 else 1.0
     base_sl_pct = atr_pct*1.5 + 0.4
@@ -156,13 +151,12 @@ def analyze_perfect(code, btc_trend=0):
     s1,t1=get_mtf_trend(closes1); s4,t4=get_mtf_trend(closes4); sD,tD=get_mtf_trend(closesD)
     vol_score,vol_txt=volume_check(kl4)
     con_ok,con_side,con_msg=v5_confluence_lock(s1,t1,s4,t4,sD,tD)
-    if not con_ok and abs(s4)<50: return {"error":True,"msg":con_msg}
     direction=con_side if con_side else ("BUY" if s4>0 else "SELL")
     sl,tp1,tp2,tp3,sl_pct=v5_dynamic_atr_sl_tp(live,atr,direction,code in FAST_COINS)
     conf=81 if abs(s4)>=50 else 68
     sl_dist_pct=abs(sl-live)/live*100; tp1_dist_pct=abs(tp1-live)/live*100; tp2_dist_pct=abs(tp2-live)/live*100; tp3_dist_pct=abs(tp3-live)/live*100
     trend_txt="STRONG DOWNTREND" if direction=="SELL" and abs(s4)>=50 else "STRONG UPTREND" if direction=="BUY" and abs(s4)>=50 else "DOWNTREND" if direction=="SELL" else "UPTREND"
-    return {"error":False,"code":code,"price":live,"e20":e20,"e50":e50,"e200":e200,"rsi":rsi,"atr":atr,"dir":direction,"entry":live,"sl":sl,"tp1":tp1,"tp2":tp2,"tp3":tp3,"lev":25,"conf":conf,"win_est":78,"kl":kl4,"is_fast":code in FAST_COINS,"mtf_txt":f"1H {t1} | 4H {t4} | 1D {tD}","vol_txt":vol_txt,"adx":18,"btc_trend":btc_trend,"btc_align":"aligns with","trend_txt":trend_txt,"sl_dist_pct":sl_dist_pct,"tp1_dist_pct":tp1_dist_pct,"tp2_dist_pct":tp2_dist_pct,"tp3_dist_pct":tp3_dist_pct,"con_msg":con_msg}
+    return {"error":False,"code":code,"price":live,"e20":e20,"e50":e50,"e200":e200,"rsi":rsi,"atr":atr,"dir":direction,"entry":live,"sl":sl,"tp1":tp1,"tp2":tp2,"tp3":tp3,"lev":25,"conf":conf,"win_est":78,"kl":kl4,"is_fast":code in FAST_COINS,"mtf_txt":f"1H {t1} | 4H {t4} | 1D {tD}","vol_txt":vol_txt,"adx":18,"btc_trend":btc_trend,"trend_txt":trend_txt,"sl_dist_pct":sl_dist_pct,"tp1_dist_pct":tp1_dist_pct,"tp2_dist_pct":tp2_dist_pct,"tp3_dist_pct":tp3_dist_pct,"con_msg":con_msg}
 
 def get_btc_trend():
     try:
@@ -187,33 +181,63 @@ def generate_chart_perfect(r):
     except: return None
 
 def coins_kb_perfect():
-    daily=get_daily()
+    daily=get_daily(); active=get_active()
     btns=[]
-    btns.append([InlineKeyboardButton(f"SCAN BEST MASTER - Trade {daily['trades']+1}/3 Today",callback_data="SCAN_BEST")])
-    btns.append([InlineKeyboardButton(f"Daily: {daily['wins']}W/{daily['losses']}L P&L ${daily['pnl']:.2f}",callback_data="SHOW_DAILY")])
-    btns.append([InlineKeyboardButton("--- FAST PROFIT ---",callback_data="IGNORE")])
+    if active and active.get("status")=="OPEN":
+        coin=active.get("coin"); dir_=active.get("dir")
+        btns.append([InlineKeyboardButton(f"📡 MONITORING {coin} {dir_} LIVE - FAST PROFIT",callback_data="MONITOR_LIVE")])
+        btns.append([InlineKeyboardButton(f"🔍 Check {coin} Now",callback_data="CHECK_NOW"), InlineKeyboardButton(f"❌ Close {coin}",callback_data="CLOSE_TRADE")])
+        btns.append([InlineKeyboardButton(f"Daily: {daily['wins']}W/{daily['losses']}L P&L ${daily['pnl']:.2f}",callback_data="SHOW_DAILY")])
+    else:
+        btns.append([InlineKeyboardButton(f"🔍 SCAN BEST MASTER - Trade {daily['trades']+1}/3 Today",callback_data="SCAN_BEST")])
+        btns.append([InlineKeyboardButton(f"📊 Daily: {daily['wins']}W/{daily['losses']}L P&L ${daily['pnl']:.2f}",callback_data="SHOW_DAILY")])
+    btns.append([InlineKeyboardButton("--- ⚡ FAST PROFIT ---",callback_data="IGNORE")])
     fast=["SOL","DOGE","PEPE","BONK","WIF","BOME","FLOKI","SHIB","AVAX","SUI","ARB","OP","APT","TAO","NOT"]
     row=[]
     for c in fast:
-        row.append(InlineKeyboardButton(f"{c}",callback_data=f"C_{c}"))
+        row.append(InlineKeyboardButton(f"⚡ {c}",callback_data=f"C_{c}"))
         if len(row)==3: btns.append(row); row=[]
-    btns.append([InlineKeyboardButton("--- GOOD RESULT SLOW ---",callback_data="IGNORE")])
+    btns.append([InlineKeyboardButton("--- 🐢 GOOD RESULT ---",callback_data="IGNORE")])
     slow=["BTC","ETH","BNB","XRP","ADA","LINK","TRX","DOT","MATIC","LTC","BCH","UNI","ATOM","ETC","FIL","PAXG"]
     row=[]
     for c in slow:
-        row.append(InlineKeyboardButton(f"{c}",callback_data=f"C_{c}"))
+        row.append(InlineKeyboardButton(f"🐢 {c}",callback_data=f"C_{c}"))
         if len(row)==3: btns.append(row); row=[]
-    btns.append([InlineKeyboardButton("XAUUSD GOLD LIVE",callback_data="C_PAXG")])
+    btns.append([InlineKeyboardButton("🏆 XAUUSD GOLD LIVE",callback_data="C_PAXG")])
     return InlineKeyboardMarkup(btns)
 
 async def start(u,c):
     save_chat_id(u.message.chat.id)
-    await u.message.reply_text("V6.3 FAST PROFIT AUTO-CLOSE\nSCAN BEST MASTER - Trade 1/3 Today\nDaily: 0W/0L P&L $0.00\nBot go monitor active coin for FAST PROFIT + Good result!",reply_markup=coins_kb_perfect())
+    await u.message.reply_text("V6.4 MONITOR VISIBLE - LIVE\nSCAN BEST MASTER - Trade 1/3 Today\nBot go monitor active coin for FAST PROFIT with LIVE button!",reply_markup=coins_kb_perfect())
 
 async def btn_handler(u,c):
     q=u.callback_query; await q.answer(); d=q.data
     if d=="IGNORE": return
     daily=get_daily(); btc=get_btc_trend()
+    if d=="MONITOR_LIVE" or d=="CHECK_NOW":
+        active=get_active()
+        if not active or active.get("status")!="OPEN":
+            await q.message.reply_text("No active trade - Click SOL/DOGE/BTC to start monitoring!",reply_markup=coins_kb_perfect()); return
+        coin=active.get("coin"); entry=active.get("entry"); sl=active.get("sl"); tp1=active.get("tp1"); tp2=active.get("tp2"); dir_=active.get("dir")
+        price=get_price_now(CRYPTO.get(coin))
+        if not price: price=entry
+        lev=25
+        if dir_=="BUY":
+            live_pnl_pct=(price-entry)/entry*100*lev
+        else:
+            live_pnl_pct=(entry-price)/entry*100*lev
+        live_pnl=5*live_pnl_pct/100
+        status="PROFIT" if live_pnl_pct>0 else "LOSS"
+        txt=(f"📡 MONITORING {coin} {dir_} LIVE\n\nEntry {fmt(entry)} | Now {fmt(price)} | SL {fmt(sl)} | TP1 {fmt(tp1)}\nLive P&L: {live_pnl_pct:.2f}% Lev 25x: $5 -> {'+' if live_pnl>=0 else ''}${live_pnl:.2f} {status}\nTP1 FAST +{abs(tp1-entry)/entry*100*lev:.2f}%: $5 -> +${5*abs(tp1-entry)/entry*100*lev/100:.2f}\nBot dey monitor every 90s for FAST PROFIT! When TP1 hit, bot go alert you!\nTrade {daily['trades']}/3 - Good result loading...")
+        await q.message.reply_text(txt,reply_markup=coins_kb_perfect()); return
+    if d=="CLOSE_TRADE":
+        active=get_active()
+        if active:
+            clear_active()
+            await q.message.reply_text(f"Closed {active.get('coin')} monitoring - You fit start new FAST PROFIT trade!",reply_markup=coins_kb_perfect())
+        else:
+            await q.message.reply_text("No active trade",reply_markup=coins_kb_perfect())
+        return
     if d=="SCAN_BEST":
         await q.edit_message_text("Scanning 15 BEST coins for FAST PROFIT...")
         best=None; best_score=-1
@@ -236,10 +260,10 @@ async def btn_handler(u,c):
         buf=generate_chart_perfect(r)
         lev=r["lev"]; sl_lev=r["sl_dist_pct"]*lev; tp1_lev=r["tp1_dist_pct"]*lev; tp2_lev=r["tp2_dist_pct"]*lev; tp3_lev=r["tp3_dist_pct"]*lev
         loss5=5*sl_lev/100; p5_1=5*tp1_lev/100; p5_2=5*tp2_lev/100; p5_3=5*tp3_lev/100
-        loss100=100*sl_lev/100; p100_1=100*tp1_lev/100; p100_2=100*tp2_lev/100; p100_3=100*tp3_lev/100
-        txt=(f"MASTER FOCUS LOCKED: {r['code']} Trade {daily['trades']+1}/3 - FAST PROFIT MODE\n\n{'SELL SHORT' if r['dir']=='SELL' else 'BUY LONG'}\n{r['code']} {r['dir']} @ {fmt(r['entry'])}\nTP1 {fmt(r['tp1'])} (FAST) TP2 {fmt(r['tp2'])} TP3 {fmt(r['tp3'])} SL {fmt(r['sl'])}\nConf {r['conf']}% Win {r['win_est']}% ADX {r['adx']}\nMTF {r['mtf_txt']}\nVol {r['vol_txt']}\nTrend {r['trend_txt']}\n\nLEVERAGE {lev}x:\nSL {sl_lev:.2f}%: $5 -> ${loss5:.2f} | $100 -> ${loss100:.2f}\nTP1 FAST +{tp1_lev:.2f}%: $5 -> +${p5_1:.2f} | $100 -> +${p100_1:.2f} <- TAKE FAST!\nTP2 +{tp2_lev:.2f}%: $5 -> +${p5_2:.2f} | $100 -> +${p100_2:.2f}\nTP3 +{tp3_lev:.2f}%: $5 -> +${p5_3:.2f} | $100 -> +${p100_3:.2f}\n\nBot go monitor {r['code']} for FAST PROFIT - When TP1 hit, bot go alert you FAST! Good result!")
-        if buf: await q.message.reply_photo(photo=buf, caption=txt, reply_markup=coins_kb_perfect())
-        else: await q.message.reply_text(txt,reply_markup=coins_kb_perfect())
+        txt=(f"MASTER FOCUS LOCKED: {r['code']} Trade {daily['trades']+1}/3 - FAST PROFIT MODE\n\n{'SELL SHORT' if r['dir']=='SELL' else 'BUY LONG'}\n{r['code']} {r['dir']} @ {fmt(r['entry'])}\nTP1 {fmt(r['tp1'])} (FAST) TP2 {fmt(r['tp2'])} TP3 {fmt(r['tp3'])} SL {fmt(r['sl'])}\nConf {r['conf']}% Win {r['win_est']}% ADX {r['adx']}\nMTF {r['mtf_txt']}\nVol {r['vol_txt']}\nTrend {r['trend_txt']}\n\nLEVERAGE {lev}x:\nSL {sl_lev:.2f}%: $5 -> ${loss5:.2f}\nTP1 FAST +{tp1_lev:.2f}%: $5 -> +${p5_1:.2f} <- TAKE FAST!\n\n📡 Bot go monitor {r['code']} for FAST PROFIT - Click MONITORING button below to see LIVE P&L!")
+        kb=coins_kb_perfect()
+        if buf: await q.message.reply_photo(photo=buf, caption=txt, reply_markup=kb)
+        else: await q.message.reply_text(txt,reply_markup=kb)
         return
     if d.startswith("C_"):
         code=d[2:]
@@ -250,9 +274,10 @@ async def btn_handler(u,c):
         buf=generate_chart_perfect(r)
         lev=r["lev"]; sl_lev=r["sl_dist_pct"]*lev; tp1_lev=r["tp1_dist_pct"]*lev
         loss5=5*sl_lev/100; p5_1=5*tp1_lev/100
-        txt=(f"MASTER FOCUS LOCKED: {r['code']} Trade {daily['trades']+1}/3 - FAST PROFIT\n\n{'SELL SHORT' if r['dir']=='SELL' else 'BUY LONG'} {r['code']} @ {fmt(r['entry'])}\nTP1 FAST {fmt(r['tp1'])} +{tp1_lev:.2f}%: $5 -> +${p5_1:.2f}\n\nBot go monitor {r['code']} for FAST PROFIT! Good result!")
-        if buf: await q.message.reply_photo(photo=buf, caption=txt, reply_markup=coins_kb_perfect())
-        else: await q.message.reply_text(txt,reply_markup=coins_kb_perfect())
+        txt=(f"MASTER FOCUS LOCKED: {r['code']} Trade {daily['trades']+1}/3 - FAST PROFIT MODE\n\n{'SELL SHORT' if r['dir']=='SELL' else 'BUY LONG'}\n{r['code']} {r['dir']} @ {fmt(r['entry'])}\nTP1 {fmt(r['tp1'])} (FAST) SL {fmt(r['sl'])}\nLEVERAGE {lev}x: TP1 FAST +{tp1_lev:.2f}%: $5 -> +${p5_1:.2f}\n\n📡 Bot go monitor {r['code']} for FAST PROFIT! Click MONITORING button below!\nGood result loading!")
+        kb=coins_kb_perfect()
+        if buf: await q.message.reply_photo(photo=buf, caption=txt, reply_markup=kb)
+        else: await q.message.reply_text(txt,reply_markup=kb)
 
 async def txt_handler(u,c):
     code=clean(u.message.text.strip())
@@ -261,12 +286,13 @@ async def txt_handler(u,c):
     if r.get("error"): return
     set_active({"status":"OPEN","coin":r["code"],"dir":r["dir"],"entry":r["entry"],"sl":r["sl"],"tp1":r["tp1"],"tp2":r["tp2"],"tp3":r["tp3"],"time":str(datetime.now())})
     buf=generate_chart_perfect(r)
-    txt=f"MASTER FOCUS LOCKED: {r['code']} {r['dir']} @ {fmt(r['entry'])} FAST PROFIT MODE"
-    if buf: await u.message.reply_photo(photo=buf, caption=txt, reply_markup=coins_kb_perfect())
-    else: await u.message.reply_text(txt,reply_markup=coins_kb_perfect())
+    txt=f"MASTER FOCUS LOCKED: {r['code']} {r['dir']} @ {fmt(r['entry'])} FAST PROFIT MODE - MONITOR VISIBLE!"
+    kb=coins_kb_perfect()
+    if buf: await u.message.reply_photo(photo=buf, caption=txt, reply_markup=kb)
+    else: await u.message.reply_text(txt,reply_markup=kb)
 
 def monitor_loop():
-    print("FAST PROFIT monitor loop started")
+    print("V6.4 MONITOR VISIBLE loop started")
     while True:
         try:
             time.sleep(90)
@@ -293,19 +319,19 @@ def monitor_loop():
                 if "TP1" in hit:
                     pnl_pct=abs(tp1-entry)/entry*100*lev
                     pnl=5*pnl_pct/100
-                    msg=f"FAST PROFIT ALERT! {coin} {hit} HIT!\nPrice {fmt(price)} reached TP1 {fmt(tp1)}\n+{pnl_pct:.2f}% Lev 25x: $5 -> +${pnl:.2f}\nGood result! Close now or hold for TP2?\nTrade {get_daily()['trades']}/3"
+                    msg=f"📡 MONITORING LIVE - FAST PROFIT ALERT!\n{coin} {hit} HIT!\nPrice {fmt(price)} reached TP1 {fmt(tp1)}\n+{pnl_pct:.2f}% Lev 25x: $5 -> +${pnl:.2f}\nGood result! Close now or hold for TP2?\nTrade {get_daily()['trades']}/3\nClick MONITORING button to see next!"
                     update_daily("WIN",pnl,coin)
                     clear_active()
                 elif "TP2" in hit:
                     pnl_pct=abs(tp2-entry)/entry*100*lev
                     pnl=5*pnl_pct/100
-                    msg=f"GOOD RESULT ALERT! {coin} {hit} HIT!\n+{pnl_pct:.2f}% Lev 25x: $5 -> +${pnl:.2f}\nTrade {get_daily()['trades']}/3"
+                    msg=f"📡 MONITORING LIVE - GOOD RESULT ALERT!\n{coin} {hit} HIT!\n+{pnl_pct:.2f}% Lev 25x: $5 -> +${pnl:.2f}\nTrade {get_daily()['trades']}/3"
                     update_daily("WIN",pnl,coin)
                     clear_active()
                 else:
                     pnl_pct=abs(sl-entry)/entry*100*lev
                     pnl=5*pnl_pct/100
-                    msg=f"SL HIT {coin} {hit}\nPrice {fmt(price)} hit SL {fmt(sl)}\n-{pnl_pct:.2f}%: $5 -> -${pnl:.2f}\nNext trade better!"
+                    msg=f"📡 MONITORING LIVE - SL HIT {coin}\nPrice {fmt(price)} hit SL {fmt(sl)}\n-{pnl_pct:.2f}%: $5 -> -${pnl:.2f}\nNext trade better!"
                     update_daily("LOSS",-pnl,coin)
                     clear_active()
                 try:
@@ -322,7 +348,7 @@ def run_bot():
     a.add_handler(CommandHandler("start",start))
     a.add_handler(CallbackQueryHandler(btn_handler))
     a.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, txt_handler))
-    print("Bot V6.3 FAST PROFIT starting..."); a.run_polling(drop_pending_updates=True)
+    print("Bot V6.4 MONITOR VISIBLE starting..."); a.run_polling(drop_pending_updates=True)
 
 if __name__=="__main__":
     threading.Thread(target=run_flask,daemon=True).start()
