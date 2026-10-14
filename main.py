@@ -50,7 +50,7 @@ CRYPTO={"BTC":"BTCUSDT","ETH":"ETHUSDT","BNB":"BNBUSDT","SOL":"SOLUSDT","XRP":"X
 FAST_COINS={"PEPE","BONK","WIF","BOME","FLOKI","SHIB","DOGE","SOL","AVAX","SUI","ARB","OP","APT","TAO","NOT"}
 
 @app.get("/")
-def home(): return "SKELLY V4 FINAL - ALL 32 COINS FIXED BUY LONG SELL SHORT LEV OK",200
+def home(): return "SKELLY V5 SNIPER MASTER - FIXED",200
 @app.get("/health")
 def health(): return {"ok":True},200
 
@@ -158,7 +158,60 @@ def detect_patterns_scored(kl):
         else: pats.append("BEARISH CANDLE 🔴"); score-=10
     return pats, max(-100,min(100,score))
 
-def analyze_balanced(code, btc_trend_score=0, use_15m_fallback=False):
+# V5 SNIPER FILTERS - NEW - NO CRASH
+def v5_liquidity_sweep(kl, side):
+    if len(kl)<22: return False, None, "No data"
+    recent_high=max([k["h"] for k in kl[-21:-1]]); recent_low=min([k["l"] for k in kl[-21:-1]])
+    last=kl[-1]
+    if side=="SELL":
+        if last["h"] > recent_high and last["c"] < recent_high:
+            return True, last["h"], f"LIQ SWEEP HIGH {fmt(recent_high)} -> {fmt(last['h'])} REJECT Short!"
+    else:
+        if last["l"] < recent_low and last["c"] > recent_low:
+            return True, last["l"], f"LIQ SWEEP LOW {fmt(recent_low)} -> {fmt(last['l'])} REJECT Long!"
+    return False, None, f"No sweep"
+
+def v5_confluence_lock(s1, t1, s4, t4, sD, tD):
+    ultra_strong_up = (s1>=50 and s4>=50 and sD>=20)
+    ultra_strong_down = (s1<=-50 and s4<=-50 and sD<=-20)
+    if ultra_strong_up: return True, "BUY", f"CONFLUENCE PASS 1H {t1} {s1} + 4H {t4} {s4} + 1D {tD} {sD}"
+    if ultra_strong_down: return True, "SELL", f"CONFLUENCE PASS 1H {t1} {s1} + 4H {t4} {s4} + 1D {tD} {sD}"
+    return False, None, f"BLOCKED 1H {t1} {s1} / 4H {t4} {s4} / 1D {tD} {sD} Need 1H STRONG"
+
+def v5_ema_pullback(closes, e20, side):
+    if not closes: return False, 100, "No data"
+    live=closes[-1]; dist=abs(live-e20)/live*100 if live!=0 else 100
+    if dist < 1.0: return True, dist, f"PULLBACK EMA20 {fmt(e20)} dist {dist:.2f}% Perfect"
+    return False, dist, f"No pullback EMA20 {fmt(e20)} dist {dist:.2f}%"
+
+def v5_dynamic_atr_sl_tp(entry, atr_val, side, is_fast):
+    if entry==0: return entry*0.98, entry*1.02, entry*1.04, entry*1.06, 2.0, 3.0, 5.0
+    atr_pct=atr_val/entry*100 if entry!=0 else 1.0
+    base_sl_pct = atr_pct*1.5 + 0.35
+    if is_fast: base_sl_pct = max(0.8, min(base_sl_pct, 2.5))
+    else: base_sl_pct = max(1.2, min(base_sl_pct, 3.2))
+    if side=="BUY":
+        sl=entry - entry*base_sl_pct/100
+        tp1=entry + entry*base_sl_pct*1.5/100
+        tp2=entry + entry*base_sl_pct*3.0/100
+        tp3=entry + entry*base_sl_pct*5.0/100
+    else:
+        sl=entry + entry*base_sl_pct/100
+        tp1=entry - entry*base_sl_pct*1.5/100
+        tp2=entry - entry*base_sl_pct*3.0/100
+        tp3=entry - entry*base_sl_pct*5.0/100
+    if not is_fast:
+        if side=="BUY": sl = sl - (entry-sl)*0.10
+        else: sl = sl + (sl-entry)*0.10
+        base_sl_pct = base_sl_pct*1.10
+    return sl, tp1, tp2, tp3, base_sl_pct, base_sl_pct*1.5, base_sl_pct*3.0
+
+def v5_volume_filter(vol_score, adx_val):
+    if vol_score <= -25: return False, f"BLOCK Vol {vol_score} low"
+    if adx_val < 18: return False, f"BLOCK ADX {adx_val:.0f} weak"
+    return True, f"Vol + ADX OK"
+
+def analyze_balanced(code, btc_trend_score=0, use_15m_fallback=False, strict_v5=True):
     sym=CRYPTO.get(code,"BTCUSDT") if code!="XAUUSD" else "PAXGUSDT"
     kl4=get_klines(sym,"4h")
     if len(kl4)<40: return {"error":True,"msg":f"No data {code}"}
@@ -187,6 +240,13 @@ def analyze_balanced(code, btc_trend_score=0, use_15m_fallback=False):
         if vol15>10:
             scalp_mode=True; vol_score=vol15; vol_txt=f"15M {txt15} (4H low, using 15M ⚡)"
             closes4=[c["c"] for c in kl15[-80:]]; live=closes4[-1]; src="15M SCALP MODE (4H low vol)"
+    if strict_v5:
+        con_ok, con_side, con_msg = v5_confluence_lock(s1, t1, s4, t4, sD, tD)
+        if not con_ok:
+            return {"error":True,"msg":con_msg,"blocked":True,"mtf_txt":f"1H {t1} | 4H {t4} | 1D {tD}","vol_txt":vol_txt,"adx":adx}
+        forced_direction = con_side
+    else:
+        con_msg = f"V4 Mode 1H {t1} | 4H {t4} | 1D {tD}"; forced_direction=None
     if live>e20>e50>e200: t_score=80
     elif live>e20>e50: t_score=50
     elif live>e50: t_score=20
@@ -203,12 +263,23 @@ def analyze_balanced(code, btc_trend_score=0, use_15m_fallback=False):
     liquidity_txt=f"Liq above {fmt(recent_high)} | below {fmt(recent_low)}"
     final = mtf_score*0.35 + t_score*0.25 + c_score*0.20 + vol_score*0.10 + (adx-25)*0.3
     is_fast = code in FAST_COINS or scalp_mode
+    vol_ok, vol_filter_msg = v5_volume_filter(vol_score, adx)
+    if strict_v5 and not vol_ok:
+        return {"error":True,"msg":vol_filter_msg,"blocked":True,"mtf_txt":f"1H {t1} | 4H {t4} | 1D {tD}","vol_txt":vol_txt,"adx":adx}
+    direction = forced_direction if forced_direction else ("BUY" if final>=5 else "SELL")
+    sweep_ok, sweep_level, sweep_msg = v5_liquidity_sweep(kl4 if not scalp_mode else kl15, direction)
+    entry = sweep_level if (sweep_ok and sweep_level) else live
+    pull_ok, pull_dist, pull_msg = v5_ema_pullback(closes4, e20, direction)
+    if strict_v5 and not pull_ok and not sweep_ok:
+        return {"error":True,"msg":pull_msg,"blocked":True,"mtf_txt":f"1H {t1} | 4H {t4} | 1D {tD}","vol_txt":vol_txt,"adx":adx}
     base_conf = 60 + abs(final)*0.32
     if mtf_agree: base_conf+=8
     if vol_score>10: base_conf+=4
     if adx>25: base_conf+=5
+    if sweep_ok: base_conf+=10
+    if pull_ok: base_conf+=5
     if adx<18: base_conf-=10
-    conf = min(93, max(50, base_conf)); high_win = conf>=75 and mtf_agree and adx>20; win_est = min(89, conf*0.96 + (5 if high_win else 0))
+    conf = min(93, max(50, base_conf)); high_win = conf>=75 and mtf_agree and adx>20 and (sweep_ok or pull_ok); win_est = min(89, conf*0.96 + (5 if high_win else 0) + (5 if sweep_ok else 0))
     pats_str=" ".join(pats)
     if vol_score<=-15: high_win=False; conf=min(conf,68); win_est=min(win_est,68)
     if vol_score<=-25: high_win=False; conf=min(conf,62); win_est=min(win_est,62)
@@ -217,24 +288,17 @@ def analyze_balanced(code, btc_trend_score=0, use_15m_fallback=False):
     if adx<18: high_win=False; conf=min(conf,65); win_est=min(win_est,65)
     btc_txt=""
     if code!="BTC" and btc_trend_score!=0:
-        if btc_trend_score<-30 and final>10: btc_txt=f"⚠️ BTC DOWN ({btc_trend_score}) vs {code} BUY = CONFLICT - Risky"; high_win=False; conf=max(50,conf-10); win_est=max(50,win_est-10)
-        elif btc_trend_score>30 and final<-10: btc_txt=f"⚠️ BTC UP ({btc_trend_score}) vs {code} SELL = CONFLICT - Risky"; high_win=False; conf=max(50,conf-10); win_est=max(50,win_est-10)
-        else: btc_txt=f"✅ BTC {btc_trend_score:+.0f} aligns with {code}"
-    if final>=5:
-        direction="BUY"; entry=live
-        if is_fast: sl_raw=sup-atr*0.25; risk_raw=max(entry-sl_raw, atr*0.35); sl=entry-risk_raw; risk=risk_raw; tp1=entry+risk*0.8; tp2=entry+risk*1.6; tp3=entry+risk*2.8
-        else: sl_raw=sup-atr*0.5; risk_raw=max(entry-sl_raw, atr*0.6); sl=entry-(risk_raw*1.10); risk=risk_raw*1.10; tp1=entry+risk*1.5; tp2=entry+risk*3.0; tp3=entry+risk*5.0
-    else:
-        direction="SELL"; entry=live
-        if is_fast: sl_raw=res+atr*0.25; risk_raw=max(sl_raw-entry, atr*0.35); sl=entry+risk_raw; risk=risk_raw; tp1=entry-risk*0.8; tp2=entry-risk*1.6; tp3=entry-risk*2.8
-        else: sl_raw=res+atr*0.5; risk_raw=max(sl_raw-entry, atr*0.6); sl=entry+(risk_raw*1.10); risk=risk_raw*1.10; tp1=entry-risk*1.5; tp2=entry-risk*3.0; tp3=entry-risk*5.0
+        if btc_trend_score<-30 and final>10: btc_txt=f"BTC DOWN {btc_trend_score} vs {code} BUY CONFLICT"; high_win=False; conf=max(50,conf-10); win_est=max(50,win_est-10)
+        elif btc_trend_score>30 and final<-10: btc_txt=f"BTC UP {btc_trend_score} vs {code} SELL CONFLICT"; high_win=False; conf=max(50,conf-10); win_est=max(50,win_est-10)
+        else: btc_txt=f"BTC {btc_trend_score:+.0f} aligns"
+    sl, tp1, tp2, tp3, sl_pct, tp1_pct, tp2_pct = v5_dynamic_atr_sl_tp(entry, atr, direction, is_fast)
+    sl_raw = sl
     atr_pct=atr/live*100 if live!=0 else 1
     if is_fast: lev="25x-50x (Fast Scalp)" if atr_pct<0.8 else "15x-30x (Fast)" if atr_pct<2 else "10x-20x (Very Fast)"
     else: lev="20x-25x (Low Vol)" if atr_pct<0.5 else "10x-15x (Normal 4H)" if atr_pct<1.2 else "5x-7x (High Vol 4H)"
-    trend_txt = "STRONG UPTREND 🚀" if t_score>60 else "UPTREND 📈" if t_score>15 else "STRONG DOWNTREND 📉" if t_score<-60 else "DOWNTREND 📉" if t_score<-15 else "SIDEWAYS ↔️"
-    return {"error":False,"code":code,"price":live,"src":src,"trend":trend_txt,"e20":e20,"e50":e50,"e200":e200,"rsi":rsi,"sup":sup,"res":res,"atr":atr,"t_score":t_score,"c_score":c_score,"final":final,"pats":pats,"dir":direction,"entry":entry,"sl":sl,"sl_raw":sl_raw,"tp1":tp1,"tp2":tp2,"tp3":tp3,"lev":lev,"conf":conf,"kl":kl4 if not scalp_mode else kl15,"is_fast":is_fast,"mtf_score":mtf_score,"mtf_agree":mtf_agree,"mtf_txt":f"1H {t1} | 4H {t4} | 1D {tD}","vol_txt":vol_txt,"vol_score":vol_score,"high_win":high_win,"win_est":win_est,"adx":adx,"btc_txt":btc_txt,"liq_txt":liquidity_txt,"scalp_mode":scalp_mode}
-
-def get_btc_trend():
+    trend_txt = "STRONG UPTREND" if t_score>60 else "UPTREND" if t_score>15 else "STRONG DOWNTREND" if t_score<-60 else "DOWNTREND" if t_score<-15 else "SIDEWAYS"
+    return {"error":False,"code":code,"price":live,"src":src,"trend":trend_txt,"e20":e20,"e50":e50,"e200":e200,"rsi":rsi,"sup":sup,"res":res,"atr":atr,"t_score":t_score,"c_score":c_score,"final":final,"pats":pats,"dir":direction,"entry":entry,"sl":sl,"sl_raw":sl_raw,"tp1":tp1,"tp2":tp2,"tp3":tp3,"lev":lev,"conf":conf,"kl":kl4 if not scalp_mode else kl15,"is_fast":is_fast,"mtf_score":mtf_score,"mtf_agree":mtf_agree,"mtf_txt":f"1H {t1} | 4H {t4} | 1D {tD}","vol_txt":vol_txt,"vol_score":vol_score,"high_win":high_win,"win_est":win_est,"adx":adx,"btc_txt":btc_txt,"liq_txt":liquidity_txt,"scalp_mode":scalp_mode,"v5_con_msg":con_msg,"v5_sweep_ok":sweep_ok,"v5_sweep_level":sweep_level,"v5_sweep_msg":sweep_msg,"v5_pull_ok":pull_ok,"v5_pull_msg":pull_msg,"v5_pull_dist":pull_dist,"v5_vol_filter_msg":vol_filter_msg,"v5_sl_pct":sl_pct}
+    def get_btc_trend():
     try:
         kl=get_klines("BTCUSDT","4h")
         if not kl: return 0
@@ -244,16 +308,18 @@ def get_btc_trend():
     except: return 0
 
 def scan_best_coins():
-    btc_score=get_btc_trend(); results=[]
+    btc_score=get_btc_trend(); results=[]; blocked=[]
     for code in CRYPTO.keys():
         if code=="XAUUSD": continue
         try:
-            r=analyze_balanced(code, btc_trend_score=btc_score, use_15m_fallback=True)
+            r=analyze_balanced(code, btc_trend_score=btc_score, use_15m_fallback=True, strict_v5=True)
             if not r.get("error"): results.append(r)
+            else:
+                if r.get("blocked"): blocked.append(f"{code}: {r.get('msg','')}")
             time.sleep(0.25)
         except: pass
-    results_sorted=sorted(results, key=lambda x: (x["win_est"], x["vol_score"]), reverse=True)
-    return results_sorted[:5], btc_score
+    results_sorted=sorted(results, key=lambda x: (x["win_est"], x["vol_score"], x["adx"]), reverse=True)
+    return results_sorted[:5], btc_score, blocked
 
 def generate_chart_image(symbol, direction, entry, sl, tp1, tp2, tp3, kl, sup, res, conf, trend_txt, is_fast, win_est, high_win):
     try:
@@ -291,22 +357,21 @@ def generate_chart_image(symbol, direction, entry, sl, tp1, tp2, tp3, kl, sup, r
         ax.text(last_x+0.8, tp1, f' TP1 {tp1:.4f} ', backgroundcolor='#2E7D32', color='white', fontsize=7, va='center', zorder=5)
         ax.text(last_x+0.8, tp2, f' TP2 {tp2:.4f} ', backgroundcolor='#2E7D32', color='white', fontsize=7, va='center', zorder=5)
         ax.text(last_x+0.8, tp3, f' TP3 {tp3:.4f} ', backgroundcolor='#1B5E20', color='white', fontsize=7, va='center', zorder=5)
-        pair = f"{symbol}USDT" if symbol!="XAUUSD" else "XAUUSD"
-        mode = "FAST ⚡" if is_fast else "SLOW 🐢"
+        pair = f"{symbol}USDT"
+        mode = "FAST" if is_fast else "SLOW"
         title_color = '#26A69A' if direction=="BUY" else '#EF5350'
-        win_txt = f"WIN {win_est:.0f}% {'✅' if high_win else '⚠️'}"
+        win_txt = f"WIN {win_est:.0f}%"
         ls_title = "BUY LONG" if direction=="BUY" else "SELL SHORT"
         ax.set_title(f"{pair} | {ls_title} | {mode} | {trend_txt} | Conf {conf:.0f}% | {win_txt}", loc='left', fontsize=11, fontweight='bold', color=title_color)
-        ax.text(0.02, 0.97, f"{mode}\nCONF {conf:.0f}%\n{win_txt}\n{trend_txt}", transform=ax.transAxes, fontsize=9, fontweight='bold', bbox=dict(boxstyle="round,pad=0.4", facecolor="white", edgecolor=title_color, alpha=0.95), va='top', color=title_color)
         ax.legend(loc='upper left', fontsize=7, bbox_to_anchor=(0.18,0.96))
         ax.grid(True, alpha=0.15)
         plt.tight_layout()
         buf=io.BytesIO()
         plt.savefig(buf, format='png', dpi=170)
-        buf.seek(0); plt.close(fig); buf.name=f"{symbol}_V4.png"
+        buf.seek(0); plt.close(fig); buf.name=f"{symbol}_V5.png"
         return buf
     except Exception as e:
-        print(f"chart error {e} {traceback.format_exc()}")
+        print(f"chart error {e}")
         return None
 
 def get_risk_calculator_text(entry, sl, tp1, tp2, tp3, lev_str, direction, is_fast):
@@ -325,45 +390,45 @@ def get_risk_calculator_text(entry, sl, tp1, tp2, tp3, lev_str, direction, is_fa
         def m5(pct): return 5*pct/100
         def m100(pct): return 100*pct/100
         long_short = "BUY LONG" if direction=="BUY" else "SELL SHORT"
-        mode_txt = "⚡ FAST - TP close <4H" if is_fast else "🐢 SLOW - SL +10% safe"
-        return f"\n{mode_txt} - {long_short}\n💵 LEVERAGE {lev_num}x - ALL TP/SL WITH LEV:\n⛔ SL {sl_pct:.2f}% Lev {lev_num}x: $5 -> ${m5(sl_pct):.2f} | $100 -> ${m100(sl_pct):.2f}\n🎯 TP1 +{abs(tp1_pct):.2f}% Lev {lev_num}x: $5 -> +${abs(m5(tp1_pct)):.2f} | $100 -> +${abs(m100(tp1_pct)):.2f}\n🎯 TP2 +{abs(tp2_pct):.2f}% Lev {lev_num}x: $5 -> +${abs(m5(tp2_pct)):.2f} | $100 -> +${abs(m100(tp2_pct)):.2f}\n🎯 TP3 +{abs(tp3_pct):.2f}% Lev {lev_num}x: $5 -> +${abs(m5(tp3_pct)):.2f} | $100 -> +${abs(m100(tp3_pct)):.2f}\n📊 Entry {fmt(entry)} | SL {fmt(sl)} | TP1 {fmt(tp1)} | TP2 {fmt(tp2)} | TP3 {fmt(tp3)} | Lev {lev_num}x\n"
+        mode_txt = "FAST" if is_fast else "SLOW ATR DYNAMIC"
+        return f"\n{mode_txt} - {long_short}\nLEV {lev_num}x: SL {sl_pct:.2f}% $5->{m5(sl_pct):.2f} $100->{m100(sl_pct):.2f} | TP1 {abs(tp1_pct):.2f}% $5->{abs(m5(tp1_pct)):.2f} TP2 {abs(tp2_pct):.2f}% $5->{abs(m5(tp2_pct)):.2f} TP3 {abs(tp3_pct):.2f}% $5->{abs(m5(tp3_pct)):.2f}\n"
     except: return ""
 
 def coins_kb():
     daily=get_daily(); active=get_active(); btns=[]
     if active and active.get("status")=="OPEN":
         ls = "BUY LONG" if active['dir']=="BUY" else "SELL SHORT"
-        btns.append([InlineKeyboardButton(f"🎯 FOCUSING: {active['coin']} {ls} - Status",callback_data=f"STATUS_{active['coin']}")])
-        btns.append([InlineKeyboardButton(f"✅ Close WIN",callback_data="CLOSE_WIN"), InlineKeyboardButton(f"❌ Close LOSS",callback_data="CLOSE_LOSS")])
+        btns.append([InlineKeyboardButton(f"FOCUSING: {active['coin']} {ls}",callback_data=f"STATUS_{active['coin']}")])
+        btns.append([InlineKeyboardButton(f"Close WIN",callback_data="CLOSE_WIN"), InlineKeyboardButton(f"Close LOSS",callback_data="CLOSE_LOSS")])
     else:
-        if daily["trades"]>=3: btns.append([InlineKeyboardButton(f"✅ Daily 3/3 Done P&L ${daily['pnl']:.2f}",callback_data="DAILY_DONE")])
-        elif daily["losses"]>=2: btns.append([InlineKeyboardButton(f"🛡️ Guard: 2 Losses Stop Today",callback_data="DAILY_DONE")])
-        else: btns.append([InlineKeyboardButton(f"🔍 SCAN BEST MASTER - Trade {daily['trades']+1}/3 Today",callback_data="SCAN_BEST")])
-        btns.append([InlineKeyboardButton(f"📊 Daily: {daily['wins']}W/{daily['losses']}L {daily['trades']}/3 P&L ${daily['pnl']:.2f}",callback_data="SHOW_DAILY")])
-    btns.append([InlineKeyboardButton("--- ⚡ FAST ---",callback_data="IGNORE_FAST")])
+        if daily["trades"]>=3: btns.append([InlineKeyboardButton(f"Daily 3/3 Done P&L ${daily['pnl']:.2f}",callback_data="DAILY_DONE")])
+        elif daily["losses"]>=2: btns.append([InlineKeyboardButton(f"Guard: 2 Losses Stop",callback_data="DAILY_DONE")])
+        else: btns.append([InlineKeyboardButton(f"SCAN BEST V5 - Trade {daily['trades']+1}/3",callback_data="SCAN_BEST")])
+        btns.append([InlineKeyboardButton(f"Daily: {daily['wins']}W/{daily['losses']}L {daily['trades']}/3 ${daily['pnl']:.2f}",callback_data="SHOW_DAILY")])
+    btns.append([InlineKeyboardButton("--- FAST ---",callback_data="IGNORE_FAST")])
     fast=["SOL","DOGE","PEPE","BONK","WIF","BOME","FLOKI","SHIB","AVAX","SUI","ARB","OP","APT","TAO","NOT"]
     row=[]
     for c in fast:
         if c in CRYPTO:
-            row.append(InlineKeyboardButton(f"⚡{c}",callback_data=f"C_{c}"))
+            row.append(InlineKeyboardButton(f"{c}",callback_data=f"C_{c}"))
             if len(row)==3: btns.append(row); row=[]
     if row: btns.append(row)
-    btns.append([InlineKeyboardButton("--- 🐢 SLOW ---",callback_data="IGNORE_SLOW")])
+    btns.append([InlineKeyboardButton("--- SLOW ---",callback_data="IGNORE_SLOW")])
     slow=["BTC","ETH","BNB","XRP","ADA","LINK","TRX","DOT","MATIC","LTC","BCH","UNI","ATOM","ETC","FIL","PAXG"]
     row=[]
     for c in slow:
         if c in CRYPTO:
-            row.append(InlineKeyboardButton(f"🐢{c}",callback_data=f"C_{c}"))
+            row.append(InlineKeyboardButton(f"{c}",callback_data=f"C_{c}"))
             if len(row)==3: btns.append(row); row=[]
     if row: btns.append(row)
-    btns.append([InlineKeyboardButton("🥇 XAUUSD GOLD LIVE",callback_data="C_XAUUSD")])
+    btns.append([InlineKeyboardButton("XAUUSD GOLD",callback_data="C_XAUUSD")])
     return InlineKeyboardMarkup(btns)
 
 def master_focus_kb(master):
-    ls = "🟢 BUY LONG" if master['dir']=="BUY" else "🔴 SELL SHORT"
+    ls = "BUY LONG" if master['dir']=="BUY" else "SELL SHORT"
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"🎯 FOCUS & TRADE {master['code']} {ls} NOW - MASTER",callback_data=f"FOCUS_{master['code']}")],
-        [InlineKeyboardButton(f"📈 Chart {master['code']} {ls}",callback_data=f"C_{master['code']}")]
+        [InlineKeyboardButton(f"FOCUS TRADE {master['code']} {ls} V5",callback_data=f"FOCUS_{master['code']}")],
+        [InlineKeyboardButton(f"Chart {master['code']}",callback_data=f"C_{master['code']}")]
     ])
 
 def monitor_loop():
@@ -387,158 +452,129 @@ def monitor_loop():
                     if hit_tp1 and not active.get("tp1_hit"):
                         active["tp1_hit"]=True; set_active(active)
                         ls = "BUY LONG" if direction=="BUY" else "SELL SHORT"
-                        send_telegram_alert(f"🔔 MASTER {active['coin']} {ls} TP1 HIT! Live {fmt(live)} Entry {fmt(entry)} - Move SL to BE, close 50%!")
+                        send_telegram_alert(f"V5 MASTER {active['coin']} {ls} TP1 HIT Live {fmt(live)} Entry {fmt(entry)} Move SL BE 50%")
                     if hit_tp2:
                         ls = "BUY LONG" if direction=="BUY" else "SELL SHORT"
                         daily=update_daily("WIN",3.0,active["coin"]); clear_active()
-                        send_telegram_alert(f"💰 MASTER {active['coin']} {ls} TP2 HIT WIN +$3! Daily {daily['wins']}W/{daily['losses']}L {daily['trades']}/3 P&L ${daily['pnl']:.2f} - SCAN NEXT MASTER!")
+                        send_telegram_alert(f"V5 MASTER {active['coin']} {ls} TP2 WIN +$3 Daily {daily['wins']}W/{daily['losses']}L {daily['trades']}/3 P&L ${daily['pnl']:.2f} SCAN NEXT")
                     if hit_sl:
                         ls = "BUY LONG" if direction=="BUY" else "SELL SHORT"
                         daily=update_daily("LOSS",-1.5,active["coin"]); clear_active()
                         guard=" GUARD STOP TODAY!" if daily["losses"]>=2 else f" Next {daily['trades']+1}/3"
-                        send_telegram_alert(f"🛑 MASTER {active['coin']} {ls} SL HIT LOSS Daily {daily['wins']}W/{daily['losses']}L{guard}")
+                        send_telegram_alert(f"V5 MASTER {active['coin']} {ls} SL LOSS Daily {daily['wins']}W/{daily['losses']}L{guard}")
             time.sleep(60)
         except: time.sleep(60)
 
 async def start(u,c):
     save_chat_id(u.message.chat.id if hasattr(u.message,'chat') else u.effective_chat.id)
     daily=get_daily(); active=get_active()
-    if daily["losses"]>=2: await u.message.reply_text(f"🛡️ DAILY GUARD ACTIVE\nYou don lose 2 today ({daily['losses']}L). Stop trading today boss to save your $5.\nP&L today: ${daily['pnl']:.2f}\nCome back tomorrow.\n\nUse /resetdaily if new day.",reply_markup=coins_kb()); return
+    if daily["losses"]>=2: await u.message.reply_text(f"GUARD ACTIVE Lose 2 today {daily['losses']}L Stop P&L ${daily['pnl']:.2f}",reply_markup=coins_kb()); return
     if active and active.get("status")=="OPEN":
         ls = "BUY LONG" if active['dir']=="BUY" else "SELL SHORT"
-        await u.message.reply_text(f"🎯 MASTER FOCUS ACTIVE\n\nYou dey trade {active['coin']} {ls} now\nEntry {fmt(active['entry'])} | TP1 {fmt(active['tp1'])} | TP2 {fmt(active['tp2'])} | SL {fmt(active['sl'])}\nBot dey monitor am. No open new coin till TP/SL.\nUse buttons 👇",reply_markup=coins_kb()); return
-    await u.message.reply_text(f"🚀 V4 FINAL - ALL 32 COINS FIXED - BUY LONG / SELL SHORT + ALL TP/SL LEV + ALL FEATURES ✅\n\nDaily: {daily['wins']}W/{daily['losses']}L Trades {daily['trades']}/3 P&L ${daily['pnl']:.2f}\n\n✅ EMA20/50/200 + RSI + ATR + Sup/Res + MTF + Vol + ADX + BTC + Liq + Patterns + Chart + Leverage ALL TP/SL + Risk $5/$100 + MASTER + TP/SL Alert + Guard - ALL 32 COINS CORRECT PRICE NOW\n\nPress SCAN to find MASTER coin for Trade {daily['trades']+1}/3 👇",reply_markup=coins_kb())
+        await u.message.reply_text(f"FOCUS ACTIVE {active['coin']} {ls} Entry {fmt(active['entry'])} TP1 {fmt(active['tp1'])} TP2 {fmt(active['tp2'])} SL {fmt(active['sl'])}",reply_markup=coins_kb()); return
+    await u.message.reply_text(f"V5 SNIPER MASTER - Daily {daily['wins']}W/{daily['losses']}L {daily['trades']}/3 P&L ${daily['pnl']:.2f} V5 Filters: Liquidity Sweep + Confluence Lock + EMA Pullback + ATR Dynamic + Vol ADX",reply_markup=coins_kb())
 
 async def status_cmd(u,c):
     save_chat_id(u.message.chat.id); active=get_active()
-    if not active or active.get("status")!="OPEN": await u.message.reply_text("No active MASTER focus. Press SCAN",reply_markup=coins_kb()); return
+    if not active or active.get("status")!="OPEN": await u.message.reply_text("No active focus",reply_markup=coins_kb()); return
     ls = "BUY LONG" if active['dir']=="BUY" else "SELL SHORT"
     kl=get_klines(active["coin"]+"USDT","1h"); live=kl[-1]["c"] if kl else active["entry"]
-    await u.message.reply_text(f"📡 LIVE MONITORING MASTER\n\n🎯 {active['coin']} {ls}\nEntry {fmt(active['entry'])}\nLive {fmt(live)}\nTP1 {fmt(active['tp1'])} TP2 {fmt(active['tp2'])} SL {fmt(active['sl'])}",reply_markup=coins_kb())
+    await u.message.reply_text(f"LIVE V5 {active['coin']} {ls} Entry {fmt(active['entry'])} Live {fmt(live)} TP1 {fmt(active['tp1'])} TP2 {fmt(active['tp2'])} SL {fmt(active['sl'])}",reply_markup=coins_kb())
 
 async def reset_daily_cmd(u,c):
     save_json(DAILY_FILE,{"date":str(date.today()),"wins":0,"losses":0,"trades":0,"pnl":0.0,"history":[]}); clear_active()
-    await u.message.reply_text("✅ Daily reset done. 3 trades available again.",reply_markup=coins_kb())
+    await u.message.reply_text("Daily reset done",reply_markup=coins_kb())
 
 async def btn_handler(u,c):
     q=u.callback_query; await q.answer(); d=q.data
     save_chat_id(q.message.chat.id); daily=get_daily(); active=get_active()
-    if d.startswith("IGNORE") or d=="DAILY_DONE":
-        await q.answer("Pick coin boss" if d!="DAILY_DONE" else f"Daily {daily['trades']}/3",show_alert=False); return
+    if d.startswith("IGNORE") or d=="DAILY_DONE": await q.answer("Pick coin",show_alert=False); return
     if d=="SHOW_DAILY":
-        await q.message.reply_text(f"📊 DAILY STATS {daily['date']}\nWins {daily['wins']} Losses {daily['losses']} Trades {daily['trades']}/3\nP&L ${daily['pnl']:.2f}",reply_markup=coins_kb()); return
+        await q.message.reply_text(f"DAILY {daily['date']} Wins {daily['wins']} Loss {daily['losses']} Trades {daily['trades']}/3 P&L ${daily['pnl']:.2f}",reply_markup=coins_kb()); return
     if d.startswith("STATUS_"):
         ls = "BUY LONG" if active['dir']=="BUY" else "SELL SHORT"
         kl=get_klines(active["coin"]+"USDT","1h") if active else []; live=kl[-1]["c"] if kl else (active["entry"] if active else 0)
-        await q.message.reply_text(f"📡 {active['coin']} {ls} Entry {fmt(active['entry'])} Live {fmt(live)} TP1 {fmt(active['tp1'])} TP2 {fmt(active['tp2'])} SL {fmt(active['sl'])}",reply_markup=coins_kb()); return
+        await q.message.reply_text(f"{active['coin']} {ls} Entry {fmt(active['entry'])} Live {fmt(live)} TP1 {fmt(active['tp1'])} TP2 {fmt(active['tp2'])} SL {fmt(active['sl'])}",reply_markup=coins_kb()); return
     if d=="CLOSE_WIN":
         ls = "BUY LONG" if active['dir']=="BUY" else "SELL SHORT"
         daily_new=update_daily("WIN",2.5,active.get("coin","")); clear_active()
-        await q.message.reply_text(f"✅ WIN Closed {ls} +$2.5 Daily {daily_new['wins']}W/{daily_new['losses']}L {daily_new['trades']}/3 - SCAN NEXT MASTER Trade {daily_new['trades']+1}/3 👇",reply_markup=coins_kb()); return
+        await q.message.reply_text(f"WIN Closed {ls} +$2.5 Daily {daily_new['wins']}W/{daily_new['losses']}L {daily_new['trades']}/3",reply_markup=coins_kb()); return
     if d=="CLOSE_LOSS":
         ls = "BUY LONG" if active['dir']=="BUY" else "SELL SHORT"
         daily_new=update_daily("LOSS",-1.5,active.get("coin","")); clear_active()
-        msg=f"❌ LOSS Closed {ls} Daily {daily_new['wins']}W/{daily_new['losses']}L {daily_new['trades']}/3"
-        if daily_new["losses"]>=2: msg+="\n🛡️ GUARD 2 losses - STOP TODAY"
+        msg=f"LOSS Closed {ls} Daily {daily_new['wins']}W/{daily_new['losses']}L {daily_new['trades']}/3"
+        if daily_new["losses"]>=2: msg+=" GUARD 2 losses STOP TODAY"
         await q.message.reply_text(msg,reply_markup=coins_kb()); return
     if d.startswith("FOCUS_"):
-        coin=d[6:]; btc=get_btc_trend(); r=analyze_balanced(coin, btc_trend_score=btc, use_15m_fallback=True)
-        if r.get("error"): await q.message.reply_text(f"No data {coin}",reply_markup=coins_kb()); return
+        coin=d[6:]; btc=get_btc_trend(); r=analyze_balanced(coin, btc_trend_score=btc, use_15m_fallback=True, strict_v5=True)
+        if r.get("error"): await q.message.reply_text(f"V5 BLOCKED {coin}: {r.get('msg','No data')} Protection!",reply_markup=coins_kb()); return
         set_active({"coin":coin,"dir":r["dir"],"entry":r["entry"],"tp1":r["tp1"],"tp2":r["tp2"],"tp3":r["tp3"],"sl":r["sl"],"confidence":r["conf"],"win_est":r["win_est"],"status":"OPEN","opened_at":str(datetime.now())[:16],"tp1_hit":False})
-        ls = "🟢 BUY LONG 🟢" if r['dir']=="BUY" else "🔴 SELL SHORT 🔴"
+        ls = "BUY LONG" if r['dir']=="BUY" else "SELL SHORT"
         risk_txt=get_risk_calculator_text(r["entry"], r["sl"], r["tp1"], r["tp2"], r["tp3"], r["lev"], r["dir"], r["is_fast"])
-        msg=f"🎯 MASTER FOCUS LOCKED: {coin} Trade {daily['trades']+1}/3\n\n{ls}\n{coin} {r['dir']} @ {fmt(r['entry'])}\nTP1 {fmt(r['tp1'])} TP2 {fmt(r['tp2'])} SL {fmt(r['sl'])}\nConf {r['conf']:.0f}% Win {r['win_est']:.0f}% ADX {r['adx']:.0f}\nMTF {r['mtf_txt']}\nVol {r['vol_txt']}\nBTC {r['btc_txt']}\nTrend {r['trend']} EMA20 {fmt(r['e20'])} EMA50 {fmt(r['e50'])} EMA200 {fmt(r['e200'])} RSI {r['rsi']:.0f}\n{risk_txt}\nBot go monitor ONLY {coin} {ls} till TP/SL hit. Enter Binance now $5 10x. Bot go alert you."
+        v5_extra = f"V5: {r['v5_con_msg']} | {r['v5_sweep_msg']} | {r['v5_pull_msg']} | ATR SL {r['v5_sl_pct']:.2f}%"
+        msg=f"V5 FOCUS LOCKED {coin} Trade {daily['trades']+1}/3 {ls} {coin} @ {fmt(r['entry'])} TP1 {fmt(r['tp1'])} TP2 {fmt(r['tp2'])} SL {fmt(r['sl'])} Conf {r['conf']:.0f}% Win {r['win_est']:.0f}% ADX {r['adx']:.0f} {v5_extra} {risk_txt}"
         try:
             buf=generate_chart_image(r['code'], r['dir'], r['entry'], r['sl'], r['tp1'], r['tp2'], r['tp3'], r['kl'], r['sup'], r['res'], r['conf'], r['trend'], r['is_fast'], r['win_est'], r['high_win'])
             if buf: await c.bot.send_photo(chat_id=q.message.chat.id, photo=buf, caption=msg, reply_markup=coins_kb()); return
         except: pass
         await q.message.reply_text(msg,reply_markup=coins_kb()); return
     if d=="SCAN_BEST":
-        if daily["trades"]>=3: await q.message.reply_text(f"✅ Daily limit 3/3 reached P&L ${daily['pnl']:.2f} Rest boss!",reply_markup=coins_kb()); return
-        if daily["losses"]>=2: await q.message.reply_text(f"🛡️ Guard 2 losses today stop P&L ${daily['pnl']:.2f}",reply_markup=coins_kb()); return
-        if active and active.get("status")=="OPEN": await q.message.reply_text(f"🎯 You still dey focus on {active['coin']} {active['dir']}. No open new till TP/SL.",reply_markup=coins_kb()); return
-        await q.edit_message_text(f"🔍 V4 MASTER SCAN - Finding BEST coin for Trade {daily['trades']+1}/3...\nBTC filter + ADX + Vol + 15M fallback... ⏳ 30 secs...")
+        if daily["trades"]>=3: await q.message.reply_text(f"Daily limit 3/3 P&L ${daily['pnl']:.2f}",reply_markup=coins_kb()); return
+        if daily["losses"]>=2: await q.message.reply_text(f"Guard 2 losses stop P&L ${daily['pnl']:.2f}",reply_markup=coins_kb()); return
+        if active and active.get("status")=="OPEN": await q.message.reply_text(f"You still focus on {active['coin']} {active['dir']}",reply_markup=coins_kb()); return
+        await q.edit_message_text(f"V5 SNIPER SCAN Finding BEST for Trade {daily['trades']+1}/3 ... 40 secs")
         try:
-            top5, btc_score = scan_best_coins()
-            if not top5: await q.message.reply_text("❌ No data, try again",reply_markup=coins_kb()); return
+            top5, btc_score, blocked = scan_best_coins()
+            if not top5: 
+                blk_txt = "\n".join(blocked[:10]) if blocked else "No coin passed V5"
+                await q.message.reply_text(f"V5 BLOCKED ALL No perfect setup BTC {btc_score} Blocked {blk_txt}",reply_markup=coins_kb()); return
             master=top5[0]; others=top5[1:3]
-            ls_master = "🟢 BUY LONG 🟢" if master['dir']=="BUY" else "🔴 SELL SHORT 🔴"
-            txt=f"🏆 V4 MASTER FOCUS - BEST COIN TO TRADE NOW\nBTC Trend {btc_score:+.0f} | Daily {daily['wins']}W/{daily['losses']}L Trades {daily['trades']}/3\n\n🥇 MASTER RECOMMENDATION - TRADE THIS ONE ONLY (Trade {daily['trades']+1}/3):\n{ls_master}\n🔥 {master['code']} {master['dir']} {master['lev']} {'⚡15M SCALP' if master['scalp_mode'] else '4H'}\nWin {master['win_est']:.0f}% | Conf {master['conf']:.0f}% | ADX {master['adx']:.0f}\nVol: {master['vol_txt']}\nMTF: {master['mtf_txt']}\nEntry {fmt(master['entry'])} | SL {fmt(master['sl'])} | TP1 {fmt(master['tp1'])} TP2 {fmt(master['tp2'])} TP3 {fmt(master['tp3'])} | Lev {master['lev']}\n{master['btc_txt']}\n{master['liq_txt']}\n\n👇 Press FOCUS to lock bot on {master['code']} {ls_master} till TP/SL hit\n\n🥈🥉 OTHER GOOD (Ignore until MASTER close):\n"
-            for o in others:
-                ls_o = "BUY LONG" if o['dir']=="BUY" else "SELL SHORT"
-                txt+=f"- {o['code']} {ls_o} {o['win_est']:.0f}% Conf {o['conf']:.0f}%\n"
-            txt+=f"\nAfter MASTER hit TP/SL, bot go allow next scan for Trade {daily['trades']+2}/3"
+            ls_master = "BUY LONG" if master['dir']=="BUY" else "SELL SHORT"
+            txt=f"V5 MASTER BEST Trade {daily['trades']+1}/3 BTC {btc_score} {ls_master} {master['code']} {master['dir']} Win {master['win_est']:.0f}% Conf {master['conf']:.0f}% ADX {master['adx']:.0f} Entry {fmt(master['entry'])} SL {fmt(master['sl'])} TP1 {fmt(master['tp1'])} TP2 {fmt(master['tp2'])} V5 {master['v5_con_msg']} {master['v5_sweep_msg']} Blocked {len(blocked)} weak"
             await q.message.reply_text(txt,reply_markup=master_focus_kb(master))
         except Exception as e:
-            print(traceback.format_exc()); await q.message.reply_text(f"❌ Scan error {e}",reply_markup=coins_kb())
+            print(traceback.format_exc()); await q.message.reply_text(f"Scan error {e}",reply_markup=coins_kb())
         return
     if not d.startswith("C_"): return
     code=d[2:]; now=time.time()
     if q.from_user.id in LAST_CLICK and now-LAST_CLICK[q.from_user.id]<1.5:
-        await q.answer("⏳ Wait small boss!",show_alert=False); return
+        await q.answer("Wait small",show_alert=False); return
     LAST_CLICK[q.from_user.id]=now
-    try: await q.edit_message_text(f"📊 V4 Analyzing {code} with ALL features + MASTER + BUY LONG SELL SHORT + LEV ALL TP/SL... ⏳")
+    try: await q.edit_message_text(f"V5 Analyzing {code} ...")
     except: pass
     try:
-        btc=get_btc_trend(); r=analyze_balanced(code, btc_trend_score=btc, use_15m_fallback=True)
-        if r.get("error"): await q.message.reply_text(f"⚠️ {r['msg']}",reply_markup=coins_kb()); return
+        btc=get_btc_trend(); r=analyze_balanced(code, btc_trend_score=btc, use_15m_fallback=True, strict_v5=True)
+        if r.get("error"): 
+            if r.get("blocked"):
+                await q.message.reply_text(f"V5 BLOCKED {code} Protection {r.get('msg','')} MTF {r.get('mtf_txt','')} Vol {r.get('vol_txt','')} ADX {r.get('adx',0):.0f} This is why TRX today blocked - V5 saves $5",reply_markup=coins_kb())
+            else:
+                await q.message.reply_text(f"{r['msg']}",reply_markup=coins_kb())
+            return
         pats_txt="\n".join([f"• {p}" for p in r["pats"]])
         risk_txt=get_risk_calculator_text(r["entry"], r["sl"], r["tp1"], r["tp2"], r["tp3"], r["lev"], r["dir"], r["is_fast"])
-        ls = "🟢 BUY LONG 🟢" if r['dir']=="BUY" else "🔴 SELL SHORT 🔴"
-        if r["high_win"]: status="🔥 HIGH WIN 80%+ - TRADE THIS ✅"
-        elif r["conf"]>=65: status="⚠️ MEDIUM 65-74% - Trade small / Wait Vol"
-        else: status="⛔ LOW CONF <65% - SKIP - NO TRADE"
-        if r["vol_score"]<=-15: status+="\n⚠️ VOL LOW - RISKY"
-        if r["scalp_mode"]: status+="\n⚡ 15M SCALP MODE ACTIVE (4H low vol)"
-        msg=f"""{ls} {r['code']} {r['dir']} SIGNAL - V4 MASTER FINAL {"⚡FAST" if r['is_fast'] else "🐢SLOW"} {"+15M" if r['scalp_mode'] else ""}
-
-{status}
-Win Est: {r['win_est']:.0f}% | Conf: {r['conf']:.0f}% | ADX: {r['adx']:.0f}
-
-💰 Price: {fmt(r['price'])} | {r['src']}
-⏰ MTF FUTURE EYE:
-{r['mtf_txt']}
-Agree: {'✅ ALL ALIGN' if r['mtf_agree'] else '⚠️ CONFLICT'}
-Vol: {r['vol_txt']}
-ADX: {r['adx']:.0f} {'✅ Strong Trend' if r['adx']>25 else '⚠️ Weak/Sideways' if r['adx']<20 else 'Normal'}
-BTC Filter: {r['btc_txt'] or 'BTC Neutral'}
-Liq: {r['liq_txt']}
-
-📊 4H FULL ANALYSIS:
-Trend: {r['trend']} ({r['t_score']:.0f})
-EMA20 {fmt(r['e20'])} | EMA50 {fmt(r['e50'])} | EMA200 {fmt(r['e200'])}
-RSI {r['rsi']:.0f} | ATR {fmt(r['atr'])}
-Sup {fmt(r['sup'])} | Res {fmt(r['res'])}
-
-🕯️ CANDLE: {r['c_score']:.0f}
-{pats_txt}
-
-💵 ENTRY - ALL DETAILS WITH LEVERAGE ALL TP/SL:
-Dir: {ls} | Lev: {r['lev']}
-Entry: {fmt(r['entry'])}
-🛑 SL: {fmt(r['sl'])} (old {fmt(r['sl_raw'])})
-🎯 TP1: {fmt(r['tp1'])} | TP2: {fmt(r['tp2'])} | TP3: {fmt(r['tp3'])}
-{risk_txt}
-Daily: {daily['wins']}W/{daily['losses']}L Trades {daily['trades']}/3 P&L ${daily['pnl']:.2f}
-
-🎯 Want to FOCUS bot on {code} {ls} till TP/SL? Press FOCUS button below.
-"""
+        ls = "BUY LONG" if r['dir']=="BUY" else "SELL SHORT"
+        if r["high_win"]: status="HIGH WIN 80%+ SNIPER PERFECT"
+        elif r["conf"]>=65: status="MEDIUM 65-74%"
+        else: status="LOW CONF <65% SKIP"
+        v5_extra = f"V5 FILTERS: {r['v5_con_msg']} | {r['v5_sweep_msg']} | {r['v5_pull_msg']} | ATR SL {r['v5_sl_pct']:.2f}%"
+        msg=f"{ls} {r['code']} {r['dir']} SIGNAL V5 {'FAST' if r['is_fast'] else 'SLOW'} {status} Win {r['win_est']:.0f}% Conf {r['conf']:.0f}% ADX {r['adx']:.0f} Price {fmt(r['price'])} MTF {r['mtf_txt']} Vol {r['vol_txt']} ADX {r['adx']:.0f} BTC {r['btc_txt']} Liq {r['liq_txt']} {v5_extra} Trend {r['trend']} EMA20 {fmt(r['e20'])} EMA50 {fmt(r['e50'])} EMA200 {fmt(r['e200'])} RSI {r['rsi']:.0f} Sup {fmt(r['sup'])} Res {fmt(r['res'])} CANDLE {r['c_score']:.0f} {pats_txt} ENTRY Dir {ls} Lev {r['lev']} Entry {fmt(r['entry'])} {'SWEEP' if r['v5_sweep_ok'] else 'PULLBACK'} SL {fmt(r['sl'])} {r['v5_sl_pct']:.2f}% ATR TP1 {fmt(r['tp1'])} TP2 {fmt(r['tp2'])} TP3 {fmt(r['tp3'])} {risk_txt} Daily {daily['wins']}W/{daily['losses']}L {daily['trades']}/3 P&L ${daily['pnl']:.2f}"
         try:
             buf=generate_chart_image(r['code'], r['dir'], r['entry'], r['sl'], r['tp1'], r['tp2'], r['tp3'], r['kl'], r['sup'], r['res'], r['conf'], r['trend'], r['is_fast'], r['win_est'], r['high_win'])
             if buf: await c.bot.send_photo(chat_id=q.message.chat.id, photo=buf, caption=msg, reply_markup=coins_kb()); return
         except Exception as e: print(f"Chart send failed {e}")
         await q.message.reply_text(msg,reply_markup=coins_kb())
     except Exception as e:
-        print(traceback.format_exc()); await q.message.reply_text(f"❌ {code} {e}",reply_markup=coins_kb())
+        print(traceback.format_exc()); await q.message.reply_text(f"{code} {e}",reply_markup=coins_kb())
 
 async def txt_handler(u,c):
     save_chat_id(u.message.chat.id); s=clean((u.message.text or "").strip())
     if s in CRYPTO or s=="XAUUSD":
-        btc=get_btc_trend(); r=analyze_balanced(s, btc_trend_score=btc, use_15m_fallback=True)
-        if r.get("error"): await u.message.reply_text(f"⚠️ {r['msg']}",reply_markup=coins_kb()); return
-        ls = "🟢 BUY LONG" if r['dir']=="BUY" else "🔴 SELL SHORT"
+        btc=get_btc_trend(); r=analyze_balanced(s, btc_trend_score=btc, use_15m_fallback=True, strict_v5=True)
+        if r.get("error"): 
+            await u.message.reply_text(f"V5 BLOCKED {s}: {r.get('msg','No data')} Protection!",reply_markup=coins_kb()); return
+        ls = "BUY LONG" if r['dir']=="BUY" else "SELL SHORT"
         risk_txt=get_risk_calculator_text(r["entry"], r["sl"], r["tp1"], r["tp2"], r["tp3"], r["lev"], r["dir"], r["is_fast"])
-        msg=f"{ls} {r['code']} {r['dir']} Win {r['win_est']:.0f}% Conf {r['conf']:.0f}% ADX {r['adx']:.0f}\nPrice {fmt(r['price'])} EMA20 {fmt(r['e20'])} EMA50 {fmt(r['e50'])} EMA200 {fmt(r['e200'])} RSI {r['rsi']:.0f}\nEntry {fmt(r['entry'])} SL {fmt(r['sl'])} TP1 {fmt(r['tp1'])} TP2 {fmt(r['tp2'])} TP3 {fmt(r['tp3'])} Lev {r['lev']}\n{risk_txt}"
+        msg=f"{ls} {r['code']} {r['dir']} Win {r['win_est']:.0f}% Conf {r['conf']:.0f}% ADX {r['adx']:.0f} Sweep {r['v5_sweep_ok']} Price {fmt(r['price'])} Entry {fmt(r['entry'])} SL {fmt(r['sl'])} TP1 {fmt(r['tp1'])} TP2 {fmt(r['tp2'])} TP3 {fmt(r['tp3'])} Lev {r['lev']} {risk_txt}"
         await u.message.reply_text(msg,reply_markup=coins_kb())
 
 def run_flask(): app.run(host="0.0.0.0",port=PORT)
@@ -550,7 +586,7 @@ def run_bot():
     a.add_handler(CommandHandler("resetdaily",reset_daily_cmd))
     a.add_handler(CallbackQueryHandler(btn_handler))
     a.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,txt_handler))
-    print("Bot V4 FINAL - ALL 32 COINS FIXED starting..."); threading.Thread(target=monitor_loop,daemon=True).start()
+    print("Bot V5 SNIPER MASTER FIXED starting..."); threading.Thread(target=monitor_loop,daemon=True).start()
     a.run_polling(drop_pending_updates=True)
 
 if __name__=="__main__":
